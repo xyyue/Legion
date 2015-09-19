@@ -58,6 +58,7 @@ enum NodeFields {
   FID_LEAKAGE,
   FID_CHARGE,
   FID_NODE_VOLTAGE,
+  FID_NODE_VALUE, // newly added
 };
 
 enum WireFields {
@@ -71,6 +72,7 @@ enum WireFields {
   FID_CURRENT,
   FID_WIRE_VOLTAGE = (FID_CURRENT+WIRE_SEGMENTS),
   FID_LAST = (FID_WIRE_VOLTAGE+WIRE_SEGMENTS-1),
+  FID_WIRE_VALUE, // newly added
 };
 
 enum LocatorFields {

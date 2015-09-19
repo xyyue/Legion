@@ -58,7 +58,7 @@ void dense_to_sparse(std::vector<std::vector<double> >&mat, std::vector<SparseEl
       }
 }
                                                                                                                                   
-void print_mat(std::vector<std::vector<double> > &mat, std::vector<SparseElem>&sparse_mat)
+void print_mat(std::vector<std::vector<double> > &mat, std::vector<SparseElem>&sparse_mat, std::vector<double> &vec)
 {
   printf("The dense matrix is:\n");
   for (unsigned int i = 0; i < mat.size(); i++)
@@ -71,6 +71,10 @@ void print_mat(std::vector<std::vector<double> > &mat, std::vector<SparseElem>&s
 
   for (unsigned int i = 0; i < sparse_mat.size(); i++)
     printf("%d, %d, %f\n", sparse_mat[i].x, sparse_mat[i].y, sparse_mat[i].z);
+  printf("\n The vector is :\n");
+  for (unsigned int i = 0; i < vec.size(); i++)
+    printf("%f, ", vec[i]);
+  printf("\n");
 }
 
 int calc_wire_num(std::vector<SparseElem> &sparse_mat)
@@ -96,7 +100,8 @@ void parse_input_args(char **argv, int argc, int &num_loops, int &num_pieces,
 
 Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context ctx,
                         HighLevelRuntime *runtime, int num_pieces, int nodes_per_piece,
-                        int wires_per_piece, int pct_wire_in_piece, int random_seed, int steps);
+                        int wires_per_piece, int pct_wire_in_piece, int random_seed, int steps,
+                        std::vector<SparseElem>&sparse_mat, std::vector<double> &vec);
 
 void allocate_node_fields(Context ctx, HighLevelRuntime *runtime, FieldSpace node_space);
 void allocate_wire_fields(Context ctx, HighLevelRuntime *runtime, FieldSpace wire_space);
@@ -108,7 +113,7 @@ void top_level_task(const Task *task,
 {
   int num_loops = 2;
   int num_pieces = 3;
-  int nodes_per_piece = 2;
+  int nodes_per_piece = 2; // This one should be calculated instead
   int wires_per_piece = 4;
   int pct_wire_in_piece = 95;
   int random_seed = 12345;
@@ -116,7 +121,7 @@ void top_level_task(const Task *task,
   int sync = 0;
   bool perform_checks = false;
   bool dump_values = false;
-  int size = 6;
+  int size = 7;
   
     const InputArgs &command_args = HighLevelRuntime::get_input_args();
     char **argv = command_args.argv;
@@ -130,7 +135,7 @@ void top_level_task(const Task *task,
     std::vector<SparseElem> sparse_mat;
     fill_mat(mat, vec, size);
     dense_to_sparse(mat, sparse_mat); 
-    print_mat(mat, sparse_mat);
+    print_mat(mat, sparse_mat, vec);
 
     log_circuit.print("circuit settings: loops=%d pieces=%d nodes/piece=%d "
                             "wires/piece=%d pct_in_piece=%d seed=%d",
@@ -140,8 +145,11 @@ void top_level_task(const Task *task,
   Circuit circuit;
   {
     int num_circuit_nodes = size;
-    int num_circuit_wires = 100;//calc_wire_num(sparse_mat);
+    int num_circuit_wires = calc_wire_num(sparse_mat);   // This may make the code not working well
+    nodes_per_piece = (num_circuit_nodes % num_pieces == 0) ? (num_circuit_nodes
+    / num_pieces) : (num_circuit_nodes / (num_pieces - 1));
     //printf("the wire number is %d\n", calc_wire_num(sparse_mat));
+
     // Make index spaces
     IndexSpace node_index_space = runtime->create_index_space(ctx,num_circuit_nodes);
     runtime->attach_name(node_index_space, "node_index_space");
@@ -170,7 +178,8 @@ void top_level_task(const Task *task,
   // Load the circuit
   std::vector<CircuitPiece> pieces(num_pieces);
   Partitions parts = load_circuit(circuit, pieces, ctx, runtime, num_pieces, nodes_per_piece,
-                                  wires_per_piece, pct_wire_in_piece, random_seed, steps);
+                                  wires_per_piece, pct_wire_in_piece,
+                                  random_seed, steps, sparse_mat, vec);
 
   // Arguments for each point
   ArgumentMap local_args;
@@ -397,6 +406,9 @@ void allocate_node_fields(Context ctx, HighLevelRuntime *runtime, FieldSpace nod
   runtime->attach_name(node_space, FID_CHARGE, "charge");
   allocator.allocate_field(sizeof(float), FID_NODE_VOLTAGE);
   runtime->attach_name(node_space, FID_NODE_VOLTAGE, "node voltage");
+
+  allocator.allocate_field(sizeof(double), FID_NODE_VALUE);
+  runtime->attach_name(node_space, FID_NODE_VALUE, "node value");
 }
 
 void allocate_wire_fields(Context ctx, HighLevelRuntime *runtime, FieldSpace wire_space)
@@ -430,6 +442,8 @@ void allocate_wire_fields(Context ctx, HighLevelRuntime *runtime, FieldSpace wir
     sprintf(field_name, "wire_voltage_%d", i);
     runtime->attach_name(wire_space, FID_WIRE_VOLTAGE+i, field_name);
   }
+  allocator.allocate_field(sizeof(double), FID_WIRE_VALUE);
+  runtime->attach_name(wire_space, FID_WIRE_VALUE, "wire value");
 }
 
 void allocate_locator_fields(Context ctx, HighLevelRuntime *runtime, FieldSpace locator_space)
@@ -477,10 +491,10 @@ static T random_element(const std::vector<T> &vec)
 
 Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context ctx,
                         HighLevelRuntime *runtime, int num_pieces, int nodes_per_piece,
-                        int wires_per_piece, int pct_wire_in_piece, int random_seed,
-			int steps)
+                        int wires_per_piece, int pct_wire_in_piece, int random_seed, int steps, std::vector<SparseElem>&sparse_mat, 
+                        std::vector<double> &vec)
 {
-  log_circuit.print("Initializing circuit simulation...");
+  log_circuit.print("Initializing matrix multiplication...");
   // inline map physical instances for the nodes and wire regions
   RegionRequirement wires_req(ckt.all_wires, READ_WRITE, EXCLUSIVE, ckt.all_wires);
   wires_req.add_field(FID_IN_PTR);
@@ -494,16 +508,20 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
     wires_req.add_field(FID_CURRENT+i);
   for (int i = 0; i < (WIRE_SEGMENTS-1); i++)
     wires_req.add_field(FID_WIRE_VOLTAGE+i);
+  wires_req.add_field(FID_WIRE_VALUE);
+
   RegionRequirement nodes_req(ckt.all_nodes, READ_WRITE, EXCLUSIVE, ckt.all_nodes);
   nodes_req.add_field(FID_NODE_CAP);
   nodes_req.add_field(FID_LEAKAGE);
   nodes_req.add_field(FID_CHARGE);
   nodes_req.add_field(FID_NODE_VOLTAGE);
+  nodes_req.add_field(FID_NODE_VALUE);
   RegionRequirement locator_req(ckt.node_locator, READ_WRITE, EXCLUSIVE, ckt.node_locator);
   locator_req.add_field(FID_LOCATOR);
   PhysicalRegion wires = runtime->map_region(ctx, wires_req);
   PhysicalRegion nodes = runtime->map_region(ctx, nodes_req);
   PhysicalRegion locator = runtime->map_region(ctx, locator_req);
+
 
   Coloring wire_owner_map;
   Coloring private_node_map;
@@ -530,42 +548,73 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
     nodes.get_field_accessor(FID_CHARGE).typeify<float>();
   RegionAccessor<AccessorType::Generic, float> fa_node_voltage = 
     nodes.get_field_accessor(FID_NODE_VOLTAGE).typeify<float>();
+  RegionAccessor<AccessorType::Generic, double> fa_node_value = 
+    nodes.get_field_accessor(FID_NODE_VALUE).typeify<double>();
+
   locator.wait_until_valid();
   RegionAccessor<AccessorType::Generic, PointerLocation> locator_acc = 
     locator.get_field_accessor(FID_LOCATOR).typeify<PointerLocation>();
+
+  int num_nodes = (int)vec.size();
+
   ptr_t *first_nodes = new ptr_t[num_pieces];
   {
     IndexAllocator node_allocator = runtime->create_index_allocator(ctx, ckt.all_nodes.get_index_space());
-    node_allocator.alloc(num_pieces * nodes_per_piece);
+    node_allocator.alloc(num_nodes);
   }
+  // Write the values of the nodes.
   {
     IndexIterator itr(runtime, ctx, ckt.all_nodes.get_index_space());
     for (int n = 0; n < num_pieces; n++)
     {
       for (int i = 0; i < nodes_per_piece; i++)
       {
+        int current = n * nodes_per_piece + i;
+        if (current >= num_nodes)
+          break;
         assert(itr.has_next());
         ptr_t node_ptr = itr.next();
         if (i == 0)
           first_nodes[n] = node_ptr;
-        float capacitance = drand48() + 1.f;
-        fa_node_cap.write(node_ptr, capacitance);
-        float leakage = 0.1f * drand48();
-        fa_node_leakage.write(node_ptr, leakage);
-        fa_node_charge.write(node_ptr, 0.f);
-        float init_voltage = 2*drand48() - 1.f;
-        fa_node_voltage.write(node_ptr, init_voltage);
+
+          float capacitance = drand48() + 1.f;
+          fa_node_cap.write(node_ptr, capacitance);
+          float leakage = 0.1f * drand48();
+          fa_node_leakage.write(node_ptr, leakage);
+          fa_node_charge.write(node_ptr, 0.f);
+          float init_voltage = 2*drand48() - 1.f;
+          fa_node_voltage.write(node_ptr, init_voltage);
+
+        fa_node_value.write(node_ptr, vec[current]);
+
         // Just put everything in everyones private map at the moment       
         // We'll pull pointers out of here later as nodes get tied to 
         // wires that are non-local
         private_node_map[n].points.insert(node_ptr);
         privacy_map[0].points.insert(node_ptr);
         locator_node_map[n].points.insert(node_ptr);
-	piece_node_ptrs[n].push_back(node_ptr);
+	      piece_node_ptrs[n].push_back(node_ptr);
       }
     }
   }
-
+  // verify the previous implementation
+  IndexIterator itr(runtime, ctx, ckt.all_nodes.get_index_space());
+    for (int n = 0; n < num_pieces; n++)
+    {
+      printf("node values for the %d th piece:\n", n);
+      for (int i = 0; i < nodes_per_piece; i++)
+      {
+        int current = n * nodes_per_piece + i;
+        if (current >= num_nodes)
+          break;
+        assert(itr.has_next());
+        ptr_t node_ptr = itr.next();
+        printf("%f ", fa_node_value.read(node_ptr));
+      }
+      printf("\n");
+    }
+  printf("\n");
+ 
   wires.wait_until_valid();
   RegionAccessor<AccessorType::Generic, float> fa_wire_currents[WIRE_SEGMENTS];
   for (int i = 0; i < WIRE_SEGMENTS; i++)
@@ -589,6 +638,7 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
     wires.get_field_accessor(FID_WIRE_CAP).typeify<float>();
   ptr_t *first_wires = new ptr_t[num_pieces];
   // Allocate all the wires
+  //int num_wires = (int)sparse_mat.size();
   {
     IndexAllocator wire_allocator = runtime->create_index_allocator(ctx, ckt.all_wires.get_index_space());
     wire_allocator.alloc(num_pieces * wires_per_piece);
