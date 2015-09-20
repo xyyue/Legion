@@ -47,7 +47,7 @@ void dense_to_sparse(std::vector<std::vector<double> >&mat, std::vector<SparseEl
 {
   int size = mat.size();
   for (int i = 0; i < size; i++)
-    for (int j = 0; j < size; j++)
+    for (int j = i; j < size; j++)
       if (mat[i][j] > 1e-5)
       {
         SparseElem temp;
@@ -79,6 +79,7 @@ void print_mat(std::vector<std::vector<double> > &mat, std::vector<SparseElem>&s
 
 int calc_wire_num(std::vector<SparseElem> &sparse_mat)
 {
+  /*
   int num_wires = 0;
   for (unsigned int i = 0; i < sparse_mat.size(); i++)
     if (sparse_mat[i].x == sparse_mat[i].y) 
@@ -87,7 +88,8 @@ int calc_wire_num(std::vector<SparseElem> &sparse_mat)
       num_wires++;
   num_wires /= 2; 
   return num_wires;
-
+  */
+  return (int) sparse_mat.size();
 }
 
 LegionRuntime::Logger::Category log_circuit("circuit");
@@ -145,7 +147,7 @@ void top_level_task(const Task *task,
   Circuit circuit;
   {
     int num_circuit_nodes = size;
-    int num_circuit_wires = calc_wire_num(sparse_mat);   // This may make the code not working well
+    int num_circuit_wires = (int)sparse_mat.size();// This may make the code not working well
     nodes_per_piece = (num_circuit_nodes % num_pieces == 0) ? (num_circuit_nodes
     / num_pieces) : (num_circuit_nodes / (num_pieces - 1));
     //printf("the wire number is %d\n", calc_wire_num(sparse_mat));
@@ -195,11 +197,11 @@ void top_level_task(const Task *task,
   CalcNewCurrentsTask cnc_launcher(parts.pvt_wires, parts.pvt_nodes, parts.shr_nodes, parts.ghost_nodes,
                                    circuit.all_wires, circuit.all_nodes, launch_domain, local_args);
 
-  DistributeChargeTask dsc_launcher(parts.pvt_wires, parts.pvt_nodes, parts.shr_nodes, parts.ghost_nodes,
-                                    circuit.all_wires, circuit.all_nodes, launch_domain, local_args);
+  //DistributeChargeTask dsc_launcher(parts.pvt_wires, parts.pvt_nodes, parts.shr_nodes, parts.ghost_nodes,
+  //                                  circuit.all_wires, circuit.all_nodes, launch_domain, local_args);
 
-  UpdateVoltagesTask upv_launcher(parts.pvt_nodes, parts.shr_nodes, parts.node_locations,
-                                 circuit.all_nodes, circuit.node_locator, launch_domain, local_args);
+  //UpdateVoltagesTask upv_launcher(parts.pvt_nodes, parts.shr_nodes, parts.node_locations,
+  //                               circuit.all_nodes, circuit.node_locator, launch_domain, local_args);
 
   printf("Starting main simulation loop\n");
   //struct timespec ts_start, ts_end;
@@ -212,11 +214,11 @@ void top_level_task(const Task *task,
   {
     TaskHelper::dispatch_task<CalcNewCurrentsTask>(cnc_launcher, ctx, runtime, 
                                                    perform_checks, simulation_success);
-    TaskHelper::dispatch_task<DistributeChargeTask>(dsc_launcher, ctx, runtime, 
-                                                    perform_checks, simulation_success);
-    TaskHelper::dispatch_task<UpdateVoltagesTask>(upv_launcher, ctx, runtime, 
-                                                  perform_checks, simulation_success,
-                                                  ((i+1)==num_loops));
+    //TaskHelper::dispatch_task<DistributeChargeTask>(dsc_launcher, ctx, runtime, 
+    //                                                perform_checks, simulation_success);
+    //TaskHelper::dispatch_task<UpdateVoltagesTask>(upv_launcher, ctx, runtime, 
+    //                                              perform_checks, simulation_success,
+    //                                              ((i+1)==num_loops));
   }
   ts_end = LegionRuntime::TimeStamp::get_current_time_in_micros();
   if (simulation_success)
@@ -516,6 +518,7 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
   nodes_req.add_field(FID_CHARGE);
   nodes_req.add_field(FID_NODE_VOLTAGE);
   nodes_req.add_field(FID_NODE_VALUE);
+
   RegionRequirement locator_req(ckt.node_locator, READ_WRITE, EXCLUSIVE, ckt.node_locator);
   locator_req.add_field(FID_LOCATOR);
   PhysicalRegion wires = runtime->map_region(ctx, wires_req);
@@ -535,7 +538,7 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
 
   // keep a O(1) indexable list of nodes in each piece for connecting wires
   std::vector<std::vector<ptr_t> > piece_node_ptrs(num_pieces);
-  std::vector<int> piece_shared_nodes(num_pieces, 0);
+  std::vector<int> piece_shared_nodes(num_pieces, 0); // num of shared nodes in each piece
 
   srand48(random_seed);
 
@@ -611,10 +614,11 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
         ptr_t node_ptr = itr.next();
         printf("%f ", fa_node_value.read(node_ptr));
       }
+      printf("There are %d nodes in this piece\n", (int)piece_node_ptrs[n].size());
       printf("\n");
     }
   printf("\n");
- 
+
   wires.wait_until_valid();
   RegionAccessor<AccessorType::Generic, float> fa_wire_currents[WIRE_SEGMENTS];
   for (int i = 0; i < WIRE_SEGMENTS; i++)
@@ -636,64 +640,70 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
     wires.get_field_accessor(FID_RESISTANCE).typeify<float>();
   RegionAccessor<AccessorType::Generic, float> fa_wire_cap = 
     wires.get_field_accessor(FID_WIRE_CAP).typeify<float>();
+
+  RegionAccessor<AccessorType::Generic, double> fa_wire_value = 
+    wires.get_field_accessor(FID_WIRE_VALUE).typeify<double>();
+
   ptr_t *first_wires = new ptr_t[num_pieces];
   // Allocate all the wires
-  //int num_wires = (int)sparse_mat.size();
+  int num_wires = (int)sparse_mat.size(); 
   {
     IndexAllocator wire_allocator = runtime->create_index_allocator(ctx, ckt.all_wires.get_index_space());
-    wire_allocator.alloc(num_pieces * wires_per_piece);
+    wire_allocator.alloc(num_wires);
   }
+
   {
     IndexIterator itr(runtime, ctx, ckt.all_wires.get_index_space());
-    for (int n = 0; n < num_pieces; n++)
+    for (int i = 0; i < num_wires; i++)
     {
-      for (int i = 0; i < wires_per_piece; i++)
+      assert(itr.has_next());
+      ptr_t wire_ptr = itr.next();
+      // Record the first wire pointer for this piece
+
+      for (int j = 0; j < WIRE_SEGMENTS; j++)
+        fa_wire_currents[j].write(wire_ptr, 0.f);
+      for (int j = 0; j < WIRE_SEGMENTS-1; j++) 
+        fa_wire_voltages[j].write(wire_ptr, 0.f);
+
+      float resistance = drand48() * 10.0 + 1.0;
+      fa_wire_resistance.write(wire_ptr, resistance);
+      // Keep inductance on the order of 1e-3 * dt to avoid resonance problems
+      float inductance = (drand48() + 0.1) * DELTAT * 1e-3;
+      fa_wire_inductance.write(wire_ptr, inductance);
+      float capacitance = drand48() * 0.1;
+      fa_wire_cap.write(wire_ptr, capacitance);
+
+      int m1 = sparse_mat[i].x / nodes_per_piece;
+      int n1 = sparse_mat[i].x % nodes_per_piece;
+      ptr_t p1 = piece_node_ptrs[m1][n1];
+      fa_wire_in_ptr.write(wire_ptr, p1);
+
+
+      int m2 = sparse_mat[i].y / nodes_per_piece;
+      int n2 = sparse_mat[i].y % nodes_per_piece;
+      ptr_t p2 = piece_node_ptrs[m2][n2];
+      fa_wire_out_ptr.write(wire_ptr, p2);
+
+      fa_wire_value.write(wire_ptr, sparse_mat[i].z); 
+
+
+      // These nodes are no longer private
+      if (m1 != m2) // If the two nodes are in different pieces
       {
-        assert(itr.has_next());
-        ptr_t wire_ptr = itr.next();
-        // Record the first wire pointer for this piece
-        if (i == 0)
-          first_wires[n] = wire_ptr;
-        for (int j = 0; j < WIRE_SEGMENTS; j++)
-          fa_wire_currents[j].write(wire_ptr, 0.f);
-        for (int j = 0; j < WIRE_SEGMENTS-1; j++) 
-          fa_wire_voltages[j].write(wire_ptr, 0.f);
-
-        float resistance = drand48() * 10.0 + 1.0;
-        fa_wire_resistance.write(wire_ptr, resistance);
-        // Keep inductance on the order of 1e-3 * dt to avoid resonance problems
-        float inductance = (drand48() + 0.1) * DELTAT * 1e-3;
-        fa_wire_inductance.write(wire_ptr, inductance);
-        float capacitance = drand48() * 0.1;
-        fa_wire_cap.write(wire_ptr, capacitance);
-
-        fa_wire_in_ptr.write(wire_ptr, random_element(piece_node_ptrs[n])); //private_node_map[n].points));
-
-        if ((100 * drand48()) < pct_wire_in_piece)
-        {
-          fa_wire_out_ptr.write(wire_ptr, random_element(piece_node_ptrs[n])); //private_node_map[n].points));
-        }
-        else
-        {
-          // pick a random other piece and a node from there
-          int nn = int(drand48() * (num_pieces - 1));
-          if(nn >= n) nn++;
-
-	  // pick an arbitrary node, except that if it's one that didn't used to be shared, make the 
-	  //  sequentially next pointer shared instead so that each node's shared pointers stay compact
-	  int idx = int(drand48() * piece_node_ptrs[nn].size());
-	  if(idx > piece_shared_nodes[nn])
-	    idx = piece_shared_nodes[nn]++;
-	  ptr_t out_ptr = piece_node_ptrs[nn][idx];
-
-          fa_wire_out_ptr.write(wire_ptr, out_ptr); 
-          // This node is no longer private
-          privacy_map[0].points.erase(out_ptr);
-          privacy_map[1].points.insert(out_ptr);
-          ghost_node_map[n].points.insert(out_ptr);
-        }
-        wire_owner_map[n].points.insert(wire_ptr);
+        privacy_map[0].points.erase(p1);
+        privacy_map[0].points.erase(p2);
+        privacy_map[1].points.insert(p1);
+        privacy_map[1].points.insert(p2);
+        ghost_node_map[m1].points.insert(p2);
+        ghost_node_map[m2].points.insert(p1);
       }
+
+      // balance the number of wires in pieces
+      if (wire_owner_map[m1].points.size() < wire_owner_map[m2].points.size())
+        wire_owner_map[m1].points.insert(wire_ptr);
+      else
+        wire_owner_map[m2].points.insert(wire_ptr);
+
     }
   }
 
@@ -704,9 +714,12 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
     {
       for (int i = 0; i < nodes_per_piece; i++)
       {
+        int current = n * nodes_per_piece + i;
+        if (current >= num_nodes)
+          break;
         assert(itr.has_next());
         ptr_t node_ptr = itr.next();
-        if (privacy_map[0].points.find(node_ptr) == privacy_map[0].points.end())
+        if (privacy_map[0].points.find(node_ptr) == privacy_map[0].points.end()) // if shared
         {
           private_node_map[n].points.erase(node_ptr);
           // node is now shared
@@ -723,22 +736,28 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
   // Second pass (part 2): go through the wires and update the locations
   {
     IndexIterator itr(runtime, ctx, ckt.all_wires.get_index_space());
-    for (int n = 0; n < num_pieces; n++)
+    for (int i = 0; i < num_wires; i++)
     {
-      for (int i = 0; i < wires_per_piece; i++)
-      {
-        assert(itr.has_next());
-        ptr_t wire_ptr = itr.next();
-        ptr_t in_ptr = fa_wire_in_ptr.read(wire_ptr);
-        ptr_t out_ptr = fa_wire_out_ptr.read(wire_ptr);
+      assert(itr.has_next());
+      ptr_t wire_ptr = itr.next();
+      ptr_t in_ptr = fa_wire_in_ptr.read(wire_ptr);
+      ptr_t out_ptr = fa_wire_out_ptr.read(wire_ptr);
 
-        fa_wire_in_loc.write(wire_ptr, 
-            find_location(in_ptr, private_node_map[n].points, 
-              shared_node_map[n].points, ghost_node_map[n].points));     
-        fa_wire_out_loc.write(wire_ptr, 
-            find_location(out_ptr, private_node_map[n].points, 
-              shared_node_map[n].points, ghost_node_map[n].points));
-      }
+      // Find out which piece does the wire belong to.
+      int piece_num = 0;
+      for (int m = 0; m < (int)wire_owner_map.size(); m++)
+        if (wire_owner_map[m].points.find(wire_ptr) != wire_owner_map[m].points.end())
+        {
+          piece_num = m;
+          break;
+        }
+     // printf("piece_num = %d\n\n", piece_num);      
+      fa_wire_in_loc.write(wire_ptr, 
+          find_location(in_ptr, private_node_map[piece_num].points, 
+            shared_node_map[piece_num].points, ghost_node_map[piece_num].points));     
+      fa_wire_out_loc.write(wire_ptr, 
+          find_location(out_ptr, private_node_map[piece_num].points, 
+            shared_node_map[piece_num].points, ghost_node_map[piece_num].points));
     }
   }
 
@@ -798,9 +817,10 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
     pieces[n].pvt_wires = runtime->get_logical_subregion_by_color(ctx, result.pvt_wires, n);
     sprintf(buf, "private_wires_of_piece_%d", n);
     runtime->attach_name(pieces[n].pvt_wires, buf);
-    pieces[n].num_wires = wires_per_piece;
+
+    pieces[n].num_wires = wire_owner_map[n].points.size();
     pieces[n].first_wire = first_wires[n];
-    pieces[n].num_nodes = nodes_per_piece;
+    pieces[n].num_nodes = piece_node_ptrs[n].size();
     pieces[n].first_node = first_nodes[n];
 
     pieces[n].dt = DELTAT;
