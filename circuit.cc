@@ -29,11 +29,13 @@
 using namespace LegionRuntime::HighLevel;
 using namespace LegionRuntime::Accessor;
 
-void fill_mat(std::vector<std::vector<double> > &mat, std::vector<double> &vec, int size)
+void fill_mat(std::vector<std::vector<double> > &mat, std::vector<double> &vec, std::vector<double> &b)
 {
+  int size = (int)vec.size();
   for (int i = 0; i < size; i++)
     {
         vec[i] = drand48() * 20;
+        b[i] = drand48() * 10;
         for (int j = 0; j < size; j++)
           if (i <= j && drand48() * 100 < 30)
           {
@@ -58,7 +60,8 @@ void dense_to_sparse(std::vector<std::vector<double> >&mat, std::vector<SparseEl
       }
 }
                                                                                                                                   
-void print_mat(std::vector<std::vector<double> > &mat, std::vector<SparseElem>&sparse_mat, std::vector<double> &vec)
+void print_mat(std::vector<std::vector<double> > &mat, std::vector<SparseElem>&sparse_mat, 
+                std::vector<double> &vec, std::vector<double> &b)
 {
   printf("The dense matrix is:\n");
   for (unsigned int i = 0; i < mat.size(); i++)
@@ -71,10 +74,13 @@ void print_mat(std::vector<std::vector<double> > &mat, std::vector<SparseElem>&s
 
   for (unsigned int i = 0; i < sparse_mat.size(); i++)
     printf("%d, %d, %f\n", sparse_mat[i].x, sparse_mat[i].y, sparse_mat[i].z);
-  printf("\n The vector is :\n");
+  printf("\n The vector x(0) is :\n");
   for (unsigned int i = 0; i < vec.size(); i++)
     printf("%f, ", vec[i]);
-  printf("\n");
+  printf("\n\nThe vector b is : \n");
+  for (unsigned int i = 0; i < b.size(); i++)
+    printf("%f, ", b[i]);
+  printf("\n\n");
 }
 
 int calc_wire_num(std::vector<SparseElem> &sparse_mat)
@@ -103,7 +109,8 @@ void parse_input_args(char **argv, int argc, int &num_loops, int &num_pieces,
 Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context ctx,
                         HighLevelRuntime *runtime, int num_pieces, int nodes_per_piece,
                         int wires_per_piece, int pct_wire_in_piece, int random_seed, int steps,
-                        std::vector<SparseElem>&sparse_mat, std::vector<double> &vec);
+                        std::vector<SparseElem>&sparse_mat, std::vector<double> &vec, 
+                        std::vector<double> &b);
 
 void allocate_node_fields(Context ctx, HighLevelRuntime *runtime, FieldSpace node_space);
 void allocate_wire_fields(Context ctx, HighLevelRuntime *runtime, FieldSpace wire_space);
@@ -134,10 +141,11 @@ void top_level_task(const Task *task,
 		     steps, sync, perform_checks, dump_values, size);
     std::vector<std::vector<double> > mat(size, std::vector<double>(size, 0)); // the size x size matrix is initially filled with 0s.
     std::vector<double> vec(size, 0); // This is the vector which is going to multiply the matrix.
+    std::vector<double> b(size, 0);
     std::vector<SparseElem> sparse_mat;
-    fill_mat(mat, vec, size);
+    fill_mat(mat, vec, b);
     dense_to_sparse(mat, sparse_mat); 
-    print_mat(mat, sparse_mat, vec);
+    print_mat(mat, sparse_mat, vec, b);
 
     log_circuit.print("circuit settings: loops=%d pieces=%d nodes/piece=%d "
                             "wires/piece=%d pct_in_piece=%d seed=%d",
@@ -181,7 +189,7 @@ void top_level_task(const Task *task,
   std::vector<CircuitPiece> pieces(num_pieces);
   Partitions parts = load_circuit(circuit, pieces, ctx, runtime, num_pieces, nodes_per_piece,
                                   wires_per_piece, pct_wire_in_piece,
-                                  random_seed, steps, sparse_mat, vec);
+                                  random_seed, steps, sparse_mat, vec, b);
 
   // Arguments for each point
   ArgumentMap local_args;
@@ -194,7 +202,7 @@ void top_level_task(const Task *task,
   // Make the launchers
   Rect<1> launch_rect(Point<1>(0), Point<1>(num_pieces-1)); 
   Domain launch_domain = Domain::from_rect<1>(launch_rect);
-  CalcNewCurrentsTask cnc_launcher(parts.pvt_wires, parts.pvt_nodes, parts.shr_nodes, parts.ghost_nodes,
+  CalcNewCurrentsTask cnc_launcher(parts.pvt_wires, parts.pvt_nodes, parts.shr_nodes, parts.ghost_nodes, parts.inside_nodes,
                                    circuit.all_wires, circuit.all_nodes, launch_domain, local_args);
 
   printf("Starting main simulation loop\n");
@@ -426,6 +434,8 @@ void allocate_node_fields(Context ctx, HighLevelRuntime *runtime, FieldSpace nod
   runtime->attach_name(node_space, FID_NODE_VALUE, "node value");
   allocator.allocate_field(sizeof(double), FID_NODE_RESULT);
   runtime->attach_name(node_space, FID_NODE_RESULT, "node result");
+  allocator.allocate_field(sizeof(double), FID_NODE_OFFSET);
+  runtime->attach_name(node_space, FID_NODE_OFFSET, "node offset");
 }
 
 void allocate_wire_fields(Context ctx, HighLevelRuntime *runtime, FieldSpace wire_space)
@@ -514,7 +524,7 @@ static T random_element(const std::vector<T> &vec)
 Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context ctx,
                         HighLevelRuntime *runtime, int num_pieces, int nodes_per_piece,
                         int wires_per_piece, int pct_wire_in_piece, int random_seed, int steps, std::vector<SparseElem>&sparse_mat, 
-                        std::vector<double> &vec)
+                        std::vector<double> &vec, std::vector<double> &b)
 {
   log_circuit.print("Initializing matrix multiplication...");
   // inline map physical instances for the nodes and wire regions
@@ -541,6 +551,7 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
   nodes_req.add_field(FID_NODE_VOLTAGE);
   nodes_req.add_field(FID_NODE_VALUE);
   nodes_req.add_field(FID_NODE_RESULT);
+  nodes_req.add_field(FID_NODE_OFFSET);
 
   RegionRequirement locator_req(ckt.node_locator, READ_WRITE, EXCLUSIVE, ckt.node_locator);
   locator_req.add_field(FID_LOCATOR);
@@ -556,6 +567,7 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
   Coloring locator_node_map;
 
   Coloring privacy_map;
+  Coloring inside_node_map;
   privacy_map[0];
   privacy_map[1];
 
@@ -578,6 +590,8 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
     nodes.get_field_accessor(FID_NODE_VALUE).typeify<double>();
   RegionAccessor<AccessorType::Generic, double> fa_node_result = 
     nodes.get_field_accessor(FID_NODE_RESULT).typeify<double>();
+  RegionAccessor<AccessorType::Generic, double> fa_node_offset = 
+    nodes.get_field_accessor(FID_NODE_OFFSET).typeify<double>();
 
   locator.wait_until_valid();
   RegionAccessor<AccessorType::Generic, PointerLocation> locator_acc = 
@@ -615,6 +629,7 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
 
         fa_node_value.write(node_ptr, vec[current]);
         fa_node_result.write(node_ptr, 0.0);
+        fa_node_offset.write(node_ptr, b[current]);
 
         // Just put everything in everyones private map at the moment       
         // We'll pull pointers out of here later as nodes get tied to 
@@ -623,6 +638,7 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
         privacy_map[0].points.insert(node_ptr);
         locator_node_map[n].points.insert(node_ptr);
 	      piece_node_ptrs[n].push_back(node_ptr);
+        inside_node_map[n].points.insert(node_ptr);
       }
     }
   }
@@ -812,6 +828,7 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
   // first create the privacy partition that splits all the nodes into either shared or private
   IndexPartition privacy_part = runtime->create_index_partition(ctx, ckt.all_nodes.get_index_space(), privacy_map, true/*disjoint*/);
   runtime->attach_name(privacy_part, "is_private");
+
   
   IndexSpace all_private = runtime->get_index_subspace(ctx, privacy_part, 0);
   runtime->attach_name(all_private, "private");
@@ -820,6 +837,12 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
 
   // Now create partitions for each of the subregions
   Partitions result;
+
+  IndexPartition inside_part = runtime->create_index_partition(ctx, ckt.all_nodes.get_index_space(), inside_node_map, true/*disjoint*/);
+  runtime->attach_name(inside_part, "inside_part");
+  result.inside_nodes = runtime->get_logical_partition_by_tree(ctx, inside_part, ckt.all_nodes.get_field_space(), ckt.all_nodes.get_tree_id());
+  runtime->attach_name(result.inside_nodes, "inside_nodes");
+
   IndexPartition priv = runtime->create_index_partition(ctx, all_private, private_node_map, true/*disjoint*/);
   runtime->attach_name(priv, "private");
   result.pvt_nodes = runtime->get_logical_partition_by_tree(ctx, priv, ckt.all_nodes.get_field_space(), ckt.all_nodes.get_tree_id());

@@ -59,6 +59,7 @@ CalcNewCurrentsTask::CalcNewCurrentsTask(LogicalPartition lp_pvt_wires,
                                          LogicalPartition lp_pvt_nodes,
                                          LogicalPartition lp_shr_nodes,
                                          LogicalPartition lp_ghost_nodes,
+                                         LogicalPartition lp_inside_nodes,
                                          LogicalRegion lr_all_wires,
                                          LogicalRegion lr_all_nodes,
                                          const Domain &launch_domain,
@@ -92,12 +93,14 @@ CalcNewCurrentsTask::CalcNewCurrentsTask(LogicalPartition lp_pvt_wires,
                                READ_ONLY, EXCLUSIVE, lr_all_nodes); // Third Region
   rr_private.add_field(FID_NODE_VOLTAGE);
   rr_private.add_field(FID_NODE_VALUE);
+  rr_private.add_field(FID_NODE_OFFSET);
   add_region_requirement(rr_private);
 
   RegionRequirement rr_shared(lp_shr_nodes, 0/*identity*/,
                               READ_ONLY, EXCLUSIVE, lr_all_nodes);// 4th Region
   rr_shared.add_field(FID_NODE_VOLTAGE);
   rr_shared.add_field(FID_NODE_VALUE);
+  rr_shared.add_field(FID_NODE_OFFSET);
   add_region_requirement(rr_shared);
 
   RegionRequirement rr_ghost(lp_ghost_nodes, 0/*identity*/,
@@ -118,6 +121,12 @@ CalcNewCurrentsTask::CalcNewCurrentsTask(LogicalPartition lp_pvt_wires,
   rr_shared_result.add_field(FID_NODE_RESULT);
   add_region_requirement(rr_shared_result);
 
+
+  RegionRequirement rr_inside(lp_inside_nodes, 0/*identity*/,
+                               READ_WRITE, EXCLUSIVE, lr_all_nodes); // 8th  Region
+  rr_inside.add_field(FID_NODE_OFFSET);
+  rr_inside.add_field(FID_NODE_RESULT);
+  add_region_requirement(rr_inside);
   //RegionRequirement rr_ghost_result(lp_ghost_nodes, 0/*identity*/,
   //                           READ_WRITE, EXCLUSIVE, lr_all_nodes);  // 8th Region
   //rr_shared_result.add_field(FID_NODE_RESULT);
@@ -507,6 +516,10 @@ void CalcNewCurrentsTask::cpu_base_impl(const CircuitPiece &p,
     regions[5].get_field_accessor(FID_NODE_RESULT).typeify<double>();
   RegionAccessor<AccessorType::Generic, double> fa_shr_result = 
     regions[6].get_field_accessor(FID_NODE_RESULT).typeify<double>();
+  RegionAccessor<AccessorType::Generic, double> fa_node_offset = 
+    regions[7].get_field_accessor(FID_NODE_OFFSET).typeify<double>();
+  RegionAccessor<AccessorType::Generic, double> fa_node_result = 
+    regions[7].get_field_accessor(FID_NODE_RESULT).typeify<double>();
 
   LogicalRegion pvt_region = regions[2].get_logical_region();
   LogicalRegion shr_region = regions[3].get_logical_region();
@@ -558,9 +571,23 @@ void CalcNewCurrentsTask::cpu_base_impl(const CircuitPiece &p,
       //write_node_value(fa_pvt_result, fa_shr_result, out_loc,
       //                out_ptr, out_result + wire_value * in_node_value);
     }
-   
+
     /********************************newly added**************************************/
 
+  }
+
+  for (int i = 0; i < (int)p.num_nodes; i++)
+  {
+    ptr_t current = p.first_node + i;
+    double offset = fa_node_offset.read(current);
+    double result;
+    if (rt->safe_cast(ctx, current, pvt_region))
+      result = fa_pvt_result.read(current);
+    else
+      result = fa_shr_result.read(current); 
+    printf("previous value is %f\n", result);
+    printf("current value is %f + %f = %f\n", result, offset, offset + result);
+    fa_node_result.write(current, offset + result);
   }
 
   //printf("end of a task from piece %d\n", piece_num);

@@ -60,6 +60,7 @@ enum NodeFields {
   FID_NODE_VOLTAGE,
   FID_NODE_VALUE, // newly added
   FID_NODE_RESULT,
+  FID_NODE_OFFSET,
 };
 
 enum WireFields {
@@ -109,7 +110,7 @@ struct CircuitPiece {
 
 struct Partitions {
   LogicalPartition pvt_wires;
-  LogicalPartition pvt_nodes, shr_nodes, ghost_nodes;
+  LogicalPartition pvt_nodes, shr_nodes, ghost_nodes, inside_nodes;
   LogicalPartition node_locations;
 };
 struct SparseElem {
@@ -137,6 +138,7 @@ public:
                       LogicalPartition lp_pvt_nodes,
                       LogicalPartition lp_shr_nodes,
                       LogicalPartition lp_ghost_nodes,
+                      LogicalPartition lp_inside_nodes,
                       LogicalRegion lr_all_wires,
                       LogicalRegion lr_all_nodes,
                       const Domain &launch_domain,
