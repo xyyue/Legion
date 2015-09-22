@@ -67,15 +67,15 @@ CalcNewCurrentsTask::CalcNewCurrentsTask(LogicalPartition lp_pvt_wires,
                  Predicate::TRUE_PRED, false/*must*/, CalcNewCurrentsTask::MAPPER_ID)
 {
   RegionRequirement rr_out(lp_pvt_wires, 0/*identity*/, 
-                             READ_WRITE, EXCLUSIVE, lr_all_wires);
+                             READ_ONLY, EXCLUSIVE, lr_all_wires); // First region
   for (int i = 0; i < WIRE_SEGMENTS; i++)
     rr_out.add_field(FID_CURRENT+i);
   for (int i = 0; i < (WIRE_SEGMENTS-1); i++)
     rr_out.add_field(FID_WIRE_VOLTAGE+i);
   add_region_requirement(rr_out);
-
+  
   RegionRequirement rr_wires(lp_pvt_wires, 0/*identity*/,
-                             READ_ONLY, EXCLUSIVE, lr_all_wires);
+                             READ_ONLY, EXCLUSIVE, lr_all_wires); // Second region
   rr_wires.add_field(FID_IN_PTR);
   rr_wires.add_field(FID_OUT_PTR);
   rr_wires.add_field(FID_IN_LOC);
@@ -83,22 +83,45 @@ CalcNewCurrentsTask::CalcNewCurrentsTask(LogicalPartition lp_pvt_wires,
   rr_wires.add_field(FID_INDUCTANCE);
   rr_wires.add_field(FID_RESISTANCE);
   rr_wires.add_field(FID_WIRE_CAP);
+  rr_wires.add_field(FID_WIRE_VALUE);
+  rr_wires.add_field(FID_PIECE_NUM1);
+  rr_wires.add_field(FID_PIECE_NUM2);
   add_region_requirement(rr_wires);
 
   RegionRequirement rr_private(lp_pvt_nodes, 0/*identity*/,
-                               READ_ONLY, EXCLUSIVE, lr_all_nodes);
+                               READ_ONLY, EXCLUSIVE, lr_all_nodes); // Third Region
   rr_private.add_field(FID_NODE_VOLTAGE);
+  rr_private.add_field(FID_NODE_VALUE);
   add_region_requirement(rr_private);
 
   RegionRequirement rr_shared(lp_shr_nodes, 0/*identity*/,
-                              READ_ONLY, EXCLUSIVE, lr_all_nodes);
+                              READ_ONLY, EXCLUSIVE, lr_all_nodes);// 4th Region
   rr_shared.add_field(FID_NODE_VOLTAGE);
+  rr_shared.add_field(FID_NODE_VALUE);
   add_region_requirement(rr_shared);
 
   RegionRequirement rr_ghost(lp_ghost_nodes, 0/*identity*/,
-                             READ_ONLY, EXCLUSIVE, lr_all_nodes);
+                             READ_ONLY, EXCLUSIVE, lr_all_nodes); // 5th Region
   rr_ghost.add_field(FID_NODE_VOLTAGE);
+  rr_ghost.add_field(FID_NODE_VALUE);
   add_region_requirement(rr_ghost);
+
+
+  RegionRequirement rr_private_result(lp_pvt_nodes, 0/*identity*/,  // add the result field 
+                             READ_WRITE, EXCLUSIVE, lr_all_nodes);  // 6th Region
+  rr_private_result.add_field(FID_NODE_RESULT);
+  add_region_requirement(rr_private_result);
+
+
+  RegionRequirement rr_shared_result(lp_shr_nodes, 0/*identity*/,
+                             READ_WRITE, EXCLUSIVE, lr_all_nodes);  // 7th Region
+  rr_shared_result.add_field(FID_NODE_RESULT);
+  add_region_requirement(rr_shared_result);
+
+  //RegionRequirement rr_ghost_result(lp_ghost_nodes, 0/*identity*/,
+  //                           READ_WRITE, EXCLUSIVE, lr_all_nodes);  // 8th Region
+  //rr_shared_result.add_field(FID_NODE_RESULT);
+  //add_region_requirement(rr_ghost_result);
 }
 
 /*static*/ const char * const CalcNewCurrentsTask::TASK_NAME = "calc_new_currents";
@@ -138,6 +161,93 @@ static inline float get_node_voltage(const RegionAccessor<AT,float> &priv,
       assert(false);
   }
   return 0.f;
+}
+
+template<typename AT>
+static inline double get_node_value(Context ctx, HighLevelRuntime* rt,
+                                    const RegionAccessor<AT,double> &priv,
+                                    const RegionAccessor<AT,double> &shr,
+                                    const RegionAccessor<AT,double> &ghost,
+                                    LogicalRegion &pvt_region,
+                                    LogicalRegion &shr_region,
+                                    LogicalRegion &ghost_region,
+                                    PointerLocation loc, ptr_t ptr)
+{
+  if (rt->safe_cast(ctx, ptr, pvt_region))
+    return priv.read(ptr);
+  if (rt->safe_cast(ctx, ptr, shr_region))
+    return shr.read(ptr);
+  if (rt->safe_cast(ctx, ptr, ghost_region))
+    return ghost.read(ptr);
+    assert(false);
+  return 0.f;
+}
+ 
+template<typename AT>
+void process_result(Context ctx, HighLevelRuntime* rt, 
+                    const RegionAccessor<AT,double> &priv,
+                    const RegionAccessor<AT,double> &shr,
+                    LogicalRegion &pvt_region,
+                    LogicalRegion &shr_region,
+                    ptr_t ptr,
+                    double wire_value,
+                    double node_value)
+{
+  double result;
+  if (rt->safe_cast(ctx, ptr, pvt_region))
+  {
+    result = priv.read(ptr);
+    //printf("Previous: %f\n", result);
+    //printf("New: Previous + %f * %f = %f\n", wire_value, node_value, result + wire_value * node_value);
+    priv.write(ptr, result + wire_value * node_value);
+  }
+  else if (rt->safe_cast(ctx, ptr, shr_region))
+  {
+    result = shr.read(ptr);
+    //printf("Previous: %f\n", result);
+    //printf("New: Previous + %f * %f = %f\n", wire_value, node_value, result + wire_value * node_value);
+    shr.write(ptr, result + wire_value * node_value);
+  }
+  //double in_result = get_node_result(ctx, rt, fa_pvt_result, fa_shr_result, pvt_region, shr_region, in_loc, in_ptr);
+  //write_node_value(fa_pvt_result, fa_shr_result, in_loc,
+  //                in_ptr, in_result + wire_value * out_node_value);
+}
+
+template<typename AT>
+static inline int get_node_result(const RegionAccessor<AT,double> &priv,
+                                    const RegionAccessor<AT,double> &shr,
+                                    PointerLocation loc, ptr_t ptr)
+{
+  switch (loc)
+  {
+    case PRIVATE_PTR:
+      return priv.read(ptr);
+    case SHARED_PTR:
+      return shr.read(ptr);
+    default:
+      assert(false);
+  }
+  return 0.f;
+}
+
+
+template<typename AT>
+static inline void write_node_value(const RegionAccessor<AT,double> &priv,
+                                    const RegionAccessor<AT,double> &shr,
+                                    PointerLocation loc, ptr_t ptr, double val)
+{
+  switch (loc)
+  {
+    case PRIVATE_PTR:
+      priv.write(ptr, val);
+      break;
+    case SHARED_PTR:
+      shr.write(ptr, val);
+      break;
+    default:
+     assert(false);
+  }
+  return;
 }
 
 template<typename AT>
@@ -365,7 +475,6 @@ void CalcNewCurrentsTask::cpu_base_impl(const CircuitPiece &p,
                                         const std::vector<PhysicalRegion> &regions,
                                         Context ctx, HighLevelRuntime* rt)
 {
-#ifndef DISABLE_MATH
   RegionAccessor<AccessorType::Generic, float> fa_current[WIRE_SEGMENTS];
   for (int i = 0; i < WIRE_SEGMENTS; i++)
     fa_current[i] = regions[0].get_field_accessor(FID_CURRENT+i).typeify<float>();
@@ -380,87 +489,81 @@ void CalcNewCurrentsTask::cpu_base_impl(const CircuitPiece &p,
     regions[1].get_field_accessor(FID_IN_LOC).typeify<PointerLocation>();
   RegionAccessor<AccessorType::Generic, PointerLocation> fa_out_loc = 
     regions[1].get_field_accessor(FID_OUT_LOC).typeify<PointerLocation>();
-  RegionAccessor<AccessorType::Generic, float> fa_inductance = 
-    regions[1].get_field_accessor(FID_INDUCTANCE).typeify<float>();
-  RegionAccessor<AccessorType::Generic, float> fa_resistance = 
-    regions[1].get_field_accessor(FID_RESISTANCE).typeify<float>();
-  RegionAccessor<AccessorType::Generic, float> fa_wire_cap = 
-    regions[1].get_field_accessor(FID_WIRE_CAP).typeify<float>();
-  RegionAccessor<AccessorType::Generic, float> fa_pvt_voltage = 
-    regions[2].get_field_accessor(FID_NODE_VOLTAGE).typeify<float>();
-  RegionAccessor<AccessorType::Generic, float> fa_shr_voltage =
-    regions[3].get_field_accessor(FID_NODE_VOLTAGE).typeify<float>();
-  RegionAccessor<AccessorType::Generic, float> fa_ghost_voltage = 
-    regions[4].get_field_accessor(FID_NODE_VOLTAGE).typeify<float>();
 
-  // See if we can do the dense version with vector instructions
-  if (dense_calc_new_currents(p, fa_in_ptr, fa_out_ptr, fa_in_loc, fa_out_loc,
-                              fa_inductance, fa_resistance, fa_wire_cap,
-                              fa_pvt_voltage, fa_shr_voltage, fa_ghost_voltage,
-                              fa_current, fa_voltage))
-    return;
+  RegionAccessor<AccessorType::Generic, double> fa_wire_value =  // newly added
+    regions[1].get_field_accessor(FID_WIRE_VALUE).typeify<double>();
+  RegionAccessor<AccessorType::Generic, int> fa_piece_num1 =
+    regions[1].get_field_accessor(FID_PIECE_NUM1).typeify<int>();
+  RegionAccessor<AccessorType::Generic, int> fa_piece_num2 =
+    regions[1].get_field_accessor(FID_PIECE_NUM2).typeify<int>();
+
+  RegionAccessor<AccessorType::Generic, double> fa_pvt_value = 
+    regions[2].get_field_accessor(FID_NODE_VALUE).typeify<double>();
+  RegionAccessor<AccessorType::Generic, double> fa_shr_value = 
+    regions[3].get_field_accessor(FID_NODE_VALUE).typeify<double>();
+  RegionAccessor<AccessorType::Generic, double> fa_ghost_value = 
+    regions[4].get_field_accessor(FID_NODE_VALUE).typeify<double>();
+  RegionAccessor<AccessorType::Generic, double> fa_pvt_result = 
+    regions[5].get_field_accessor(FID_NODE_RESULT).typeify<double>();
+  RegionAccessor<AccessorType::Generic, double> fa_shr_result = 
+    regions[6].get_field_accessor(FID_NODE_RESULT).typeify<double>();
+
+  LogicalRegion pvt_region = regions[2].get_logical_region();
+  LogicalRegion shr_region = regions[3].get_logical_region();
+  LogicalRegion ghost_region = regions[4].get_logical_region();
+
 
   LegionRuntime::HighLevel::IndexIterator itr(rt, ctx, p.pvt_wires);
-  float temp_v[WIRE_SEGMENTS+1];
-  float temp_i[WIRE_SEGMENTS];
-  float old_i[WIRE_SEGMENTS];
-  float old_v[WIRE_SEGMENTS-1];
+  int piece_num = p.piece_num;                   // newly added
+
+  //printf("before the while loop from piece %d\n", piece_num);
   while (itr.has_next())
   {
     ptr_t wire_ptr = itr.next();
-    const float dt = p.dt;
-    const float recip_dt = 1.0f / dt;
-    const int steps = p.steps;
-
-    for (int i = 0; i < WIRE_SEGMENTS; i++)
-    {
-      temp_i[i] = fa_current[i].read(wire_ptr);
-      old_i[i] = temp_i[i];
-    }
-    for (int i = 0; i < (WIRE_SEGMENTS-1); i++)
-    {
-      temp_v[i+1] = fa_voltage[i].read(wire_ptr);
-      old_v[i] = temp_v[i+1];
-    }
 
     // Pin the outer voltages to the node voltages
     ptr_t in_ptr = fa_in_ptr.read(wire_ptr);
     PointerLocation in_loc = fa_in_loc.read(wire_ptr);
-    temp_v[0] = 
-      get_node_voltage(fa_pvt_voltage, fa_shr_voltage, fa_ghost_voltage, in_loc, in_ptr);
+
     ptr_t out_ptr = fa_out_ptr.read(wire_ptr);
     PointerLocation out_loc = fa_out_loc.read(wire_ptr);
-    temp_v[WIRE_SEGMENTS] = 
-      get_node_voltage(fa_pvt_voltage, fa_shr_voltage, fa_ghost_voltage, out_loc, out_ptr);
+    
+    /********************************newly added**************************************/
 
-    // Solve the RLC model iteratively
-    float inductance = fa_inductance.read(wire_ptr);
-    float recip_resistance = 1.0f / fa_resistance.read(wire_ptr);
-    float recip_capacitance = 1.0f / fa_wire_cap.read(wire_ptr);
-    for (int j = 0; j < steps; j++)
+    int m1 = fa_piece_num1.read(wire_ptr);
+    int m2 = fa_piece_num2.read(wire_ptr);
+
+    double in_node_value = get_node_value(ctx, rt, fa_pvt_value, fa_shr_value, fa_ghost_value, 
+                  pvt_region, shr_region, ghost_region, in_loc, in_ptr); 
+    double out_node_value = get_node_value(ctx, rt, fa_pvt_value, fa_shr_value, fa_ghost_value, 
+                  pvt_region, shr_region, ghost_region, out_loc, out_ptr); 
+    double wire_value = fa_wire_value.read(wire_ptr);
+    //printf("******************************************************************\n");
+    //printf("The value of the wire is: %f\n", wire_value);
+    //printf("the two values of the wire is: (%f, %f)\n", in_node_value, out_node_value);
+
+    if (m1 == piece_num)
     {
-      // first, figure out the new current from the voltage differential
-      // and our inductance:
-      // dV = R*I + L*I' ==> I = (dV - L*I')/R
-      for (int i = 0; i < WIRE_SEGMENTS; i++)
-      {
-        temp_i[i] = ((temp_v[i+1] - temp_v[i]) - 
-                     (inductance * (temp_i[i] - old_i[i]) * recip_dt)) * recip_resistance;
-      }
-      // Now update the inter-node voltages
-      for (int i = 0; i < (WIRE_SEGMENTS-1); i++)
-      {
-        temp_v[i+1] = old_v[i] + dt * (temp_i[i] - temp_i[i+1]) * recip_capacitance;
-      }
+      //printf("The 1st node value is: %f\n", in_node_value);
+      process_result(ctx, rt, fa_pvt_result, fa_shr_result, pvt_region, shr_region, in_ptr, wire_value, out_node_value);
+      //double in_result = get_node_result(ctx, rt, fa_pvt_result, fa_shr_result, pvt_region, shr_region, in_loc, in_ptr);
+      //write_node_value(fa_pvt_result, fa_shr_result, in_loc,
+      //                in_ptr, in_result + wire_value * out_node_value);
     }
+    if (m2 == piece_num && in_ptr != out_ptr)
+    {
+      //printf("The 2nd node value is: %f\n", out_node_value);
+      process_result(ctx, rt, fa_pvt_result, fa_shr_result, pvt_region, shr_region, out_ptr, wire_value, in_node_value);
+      //double out_result = get_node_result(fa_pvt_result, fa_shr_result, out_loc, out_ptr);
+      //write_node_value(fa_pvt_result, fa_shr_result, out_loc,
+      //                out_ptr, out_result + wire_value * in_node_value);
+    }
+   
+    /********************************newly added**************************************/
 
-    // Write out the results
-    for (int i = 0; i < WIRE_SEGMENTS; i++)
-      fa_current[i].write(wire_ptr, temp_i[i]);
-    for (int i = 0; i < (WIRE_SEGMENTS-1); i++)
-      fa_voltage[i].write(wire_ptr, temp_v[i+1]);
   }
-#endif
+
+  //printf("end of a task from piece %d\n", piece_num);
 }
 
 DistributeChargeTask::DistributeChargeTask(LogicalPartition lp_pvt_wires,

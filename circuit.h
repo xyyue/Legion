@@ -59,6 +59,7 @@ enum NodeFields {
   FID_CHARGE,
   FID_NODE_VOLTAGE,
   FID_NODE_VALUE, // newly added
+  FID_NODE_RESULT,
 };
 
 enum WireFields {
@@ -73,6 +74,8 @@ enum WireFields {
   FID_WIRE_VOLTAGE = (FID_CURRENT+WIRE_SEGMENTS),
   FID_LAST = (FID_WIRE_VOLTAGE+WIRE_SEGMENTS-1),
   FID_WIRE_VALUE, // newly added
+  FID_PIECE_NUM1,
+  FID_PIECE_NUM2,
 };
 
 enum LocatorFields {
@@ -100,6 +103,8 @@ struct CircuitPiece {
 
   float         dt;
   int           steps;
+  /***newly added***/
+  int piece_num;
 };
 
 struct Partitions {
