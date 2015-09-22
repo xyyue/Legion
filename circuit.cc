@@ -83,34 +83,17 @@ void print_mat(std::vector<std::vector<double> > &mat, std::vector<SparseElem>&s
   printf("\n\n");
 }
 
-int calc_wire_num(std::vector<SparseElem> &sparse_mat)
-{
-  /*
-  int num_wires = 0;
-  for (unsigned int i = 0; i < sparse_mat.size(); i++)
-    if (sparse_mat[i].x == sparse_mat[i].y) 
-      num_wires += 2;
-    else
-      num_wires++;
-  num_wires /= 2; 
-  return num_wires;
-  */
-  return (int) sparse_mat.size();
-}
-
 LegionRuntime::Logger::Category log_circuit("circuit");
 
 // Utility functions (forward declarations)
 void parse_input_args(char **argv, int argc, int &num_loops, int &num_pieces,
-                      int &nodes_per_piece, int &wires_per_piece,
-                      int &pct_wire_in_piece, int &random_seed,
+                      int &nodes_per_piece, int &random_seed,
                       int &steps, int &sync, bool &perform_checks, bool &dump_values, int &size);
 
 Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context ctx,
                         HighLevelRuntime *runtime, int num_pieces, int nodes_per_piece,
-                        int wires_per_piece, int pct_wire_in_piece, int random_seed, int steps,
-                        std::vector<SparseElem>&sparse_mat, std::vector<double> &vec, 
-                        std::vector<double> &b);
+                        int random_seed, int steps, std::vector<SparseElem>&sparse_mat, 
+                        std::vector<double> &vec, std::vector<double> &b);
 
 void allocate_node_fields(Context ctx, HighLevelRuntime *runtime, FieldSpace node_space);
 void allocate_wire_fields(Context ctx, HighLevelRuntime *runtime, FieldSpace wire_space);
@@ -123,8 +106,6 @@ void top_level_task(const Task *task,
   int num_loops = 2;
   int num_pieces = 3;
   int nodes_per_piece = 2; // This one should be calculated instead
-  int wires_per_piece = 4;
-  int pct_wire_in_piece = 95;
   int random_seed = 12345;
   int steps = STEPS;
   int sync = 0;
@@ -132,24 +113,23 @@ void top_level_task(const Task *task,
   bool dump_values = false;
   int size = 7;
   
-    const InputArgs &command_args = HighLevelRuntime::get_input_args();
-    char **argv = command_args.argv;
-    int argc = command_args.argc;
+  const InputArgs &command_args = HighLevelRuntime::get_input_args();
+  char **argv = command_args.argv;
+  int argc = command_args.argc;
 
-    parse_input_args(argv, argc, num_loops, num_pieces, nodes_per_piece, 
-		     wires_per_piece, pct_wire_in_piece, random_seed,
-		     steps, sync, perform_checks, dump_values, size);
-    std::vector<std::vector<double> > mat(size, std::vector<double>(size, 0)); // the size x size matrix is initially filled with 0s.
-    std::vector<double> vec(size, 0); // This is the vector which is going to multiply the matrix.
-    std::vector<double> b(size, 0);
-    std::vector<SparseElem> sparse_mat;
-    fill_mat(mat, vec, b);
-    dense_to_sparse(mat, sparse_mat); 
-    print_mat(mat, sparse_mat, vec, b);
+  parse_input_args(argv, argc, num_loops, num_pieces, nodes_per_piece, 
+	     random_seed, steps, sync, perform_checks, dump_values, size);
+  std::vector<std::vector<double> > mat(size, std::vector<double>(size, 0)); // the size x size matrix is initially filled with 0s.
+  std::vector<double> vec(size, 0); // This is the vector which is going to multiply the matrix.
+  std::vector<double> b(size, 0);
+  std::vector<SparseElem> sparse_mat;
+  fill_mat(mat, vec, b);
+  dense_to_sparse(mat, sparse_mat); 
+  print_mat(mat, sparse_mat, vec, b);
 
-    log_circuit.print("circuit settings: loops=%d pieces=%d nodes/piece=%d "
-                            "wires/piece=%d pct_in_piece=%d seed=%d",
-       num_loops, num_pieces, nodes_per_piece, wires_per_piece, pct_wire_in_piece, random_seed);
+  log_circuit.print("circuit settings: loops=%d pieces=%d nodes/piece=%d "
+                          "seed=%d",
+     num_loops, num_pieces, nodes_per_piece, random_seed);
   
 
   Circuit circuit;
@@ -188,7 +168,6 @@ void top_level_task(const Task *task,
   // Load the circuit
   std::vector<CircuitPiece> pieces(num_pieces);
   Partitions parts = load_circuit(circuit, pieces, ctx, runtime, num_pieces, nodes_per_piece,
-                                  wires_per_piece, pct_wire_in_piece,
                                   random_seed, steps, sparse_mat, vec, b);
 
   // Arguments for each point
@@ -251,14 +230,7 @@ void top_level_task(const Task *task,
     printf("ELAPSED TIME = %7.3f s\n", sim_time);
 
     // Compute the floating point operations per second
-    long num_circuit_nodes = num_pieces * nodes_per_piece;
-    long num_circuit_wires = num_pieces * wires_per_piece;
-    // calculate currents
-    long operations = num_circuit_wires * (WIRE_SEGMENTS*6 + (WIRE_SEGMENTS-1)*4) * steps;
-    // distribute charge
-    operations += (num_circuit_wires * 4);
-    // update voltages
-    operations += (num_circuit_nodes * 4);
+    long operations = 1000;
     // multiply by the number of loops
     operations *= num_loops;
 
@@ -343,8 +315,7 @@ int main(int argc, char **argv)
 }
 
 void parse_input_args(char **argv, int argc, int &num_loops, int &num_pieces,
-                      int &nodes_per_piece, int &wires_per_piece,
-                      int &pct_wire_in_piece, int &random_seed,
+                      int &nodes_per_piece, int &random_seed,
                       int &steps, int &sync, bool &perform_checks,
                       bool &dump_values, int &size)
 {
@@ -371,18 +342,6 @@ void parse_input_args(char **argv, int argc, int &num_loops, int &num_pieces,
     if(!strcmp(argv[i], "-npp")) 
     {
       nodes_per_piece = atoi(argv[++i]);
-      continue;
-    }
-
-    if(!strcmp(argv[i], "-wpp")) 
-    {
-      wires_per_piece = atoi(argv[++i]);
-      continue;
-    }
-
-    if(!strcmp(argv[i], "-pct")) 
-    {
-      pct_wire_in_piece = atoi(argv[++i]);
       continue;
     }
 
@@ -523,7 +482,7 @@ static T random_element(const std::vector<T> &vec)
 
 Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context ctx,
                         HighLevelRuntime *runtime, int num_pieces, int nodes_per_piece,
-                        int wires_per_piece, int pct_wire_in_piece, int random_seed, int steps, std::vector<SparseElem>&sparse_mat, 
+                        int random_seed, int steps, std::vector<SparseElem>&sparse_mat, 
                         std::vector<double> &vec, std::vector<double> &b)
 {
   log_circuit.print("Initializing matrix multiplication...");
