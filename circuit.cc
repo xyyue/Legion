@@ -87,12 +87,11 @@ LegionRuntime::Logger::Category log_circuit("circuit");
 
 // Utility functions (forward declarations)
 void parse_input_args(char **argv, int argc, int &num_loops, int &num_pieces,
-                      int &nodes_per_piece, int &random_seed,
-                      int &steps, int &sync, bool &perform_checks, bool &dump_values, int &size);
+                      int &random_seed, bool &perform_checks, bool &dump_values, int &size);
 
 Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context ctx,
                         HighLevelRuntime *runtime, int num_pieces, int nodes_per_piece,
-                        int random_seed, int steps, std::vector<SparseElem>&sparse_mat, 
+                        int random_seed, std::vector<SparseElem>&sparse_mat, 
                         std::vector<double> &vec, std::vector<double> &b);
 
 void allocate_node_fields(Context ctx, HighLevelRuntime *runtime, FieldSpace node_space);
@@ -105,10 +104,8 @@ void top_level_task(const Task *task,
 {
   int num_loops = 2;
   int num_pieces = 3;
-  int nodes_per_piece = 2; // This one should be calculated instead
+  int nodes_per_piece; // This one should be calculated instead
   int random_seed = 12345;
-  int steps = STEPS;
-  int sync = 0;
   bool perform_checks = false;
   bool dump_values = false;
   int size = 7;
@@ -117,20 +114,16 @@ void top_level_task(const Task *task,
   char **argv = command_args.argv;
   int argc = command_args.argc;
 
-  parse_input_args(argv, argc, num_loops, num_pieces, nodes_per_piece, 
-	     random_seed, steps, sync, perform_checks, dump_values, size);
+  parse_input_args(argv, argc, num_loops, num_pieces, random_seed, perform_checks, dump_values, size);
   std::vector<std::vector<double> > mat(size, std::vector<double>(size, 0)); // the size x size matrix is initially filled with 0s.
   std::vector<double> vec(size, 0); // This is the vector which is going to multiply the matrix.
-  std::vector<double> b(size, 0);
+  std::vector<double> b(size, 0);   // This is the vector of the offset.
   std::vector<SparseElem> sparse_mat;
   fill_mat(mat, vec, b);
   dense_to_sparse(mat, sparse_mat); 
   print_mat(mat, sparse_mat, vec, b);
 
-  log_circuit.print("circuit settings: loops=%d pieces=%d nodes/piece=%d "
-                          "seed=%d",
-     num_loops, num_pieces, nodes_per_piece, random_seed);
-  
+  log_circuit.print("circuit settings: loops=%d pieces=%d " "seed=%d", num_loops, num_pieces, random_seed);
 
   Circuit circuit;
   {
@@ -168,7 +161,7 @@ void top_level_task(const Task *task,
   // Load the circuit
   std::vector<CircuitPiece> pieces(num_pieces);
   Partitions parts = load_circuit(circuit, pieces, ctx, runtime, num_pieces, nodes_per_piece,
-                                  random_seed, steps, sparse_mat, vec, b);
+                                  random_seed, sparse_mat, vec, b);
 
   // Arguments for each point
   ArgumentMap local_args;
@@ -191,36 +184,60 @@ void top_level_task(const Task *task,
   bool simulation_success = true;
 
   //printf("Before the task!!!\n");
-  TaskHelper::dispatch_task<CalcNewCurrentsTask>(cnc_launcher, ctx, runtime, 
+  for (int i = 0; i < num_loops; i++)
+  {
+    TaskHelper::dispatch_task<CalcNewCurrentsTask>(cnc_launcher, ctx, runtime, 
                                                  perform_checks, simulation_success, true);
+    printf("The result of the matrix multiplication is :\n");
+    {
+      RegionRequirement nodes_req(circuit.all_nodes, READ_WRITE, EXCLUSIVE, circuit.all_nodes);
+      nodes_req.add_field(FID_NODE_RESULT);
+      nodes_req.add_field(FID_NODE_VALUE);
+      IndexIterator itr(runtime, ctx, circuit.all_nodes);
+
+      PhysicalRegion nodes = runtime->map_region(ctx, nodes_req);
+      RegionAccessor<AccessorType::Generic, double> fa_node_result =
+          nodes.get_field_accessor(FID_NODE_RESULT).typeify<double>();
+      RegionAccessor<AccessorType::Generic, double> fa_node_value =
+          nodes.get_field_accessor(FID_NODE_VALUE).typeify<double>();
+      while (itr.has_next())
+      {
+        ptr_t node_ptr = itr.next();
+        double result = fa_node_result.read(node_ptr);
+        printf("%f\n", result);
+        fa_node_value.write(node_ptr, result);
+        fa_node_result.write(node_ptr, 0.0);
+      }
+    }
+  }
   
   //printf("After the task!!!\n");
   ts_end = LegionRuntime::TimeStamp::get_current_time_in_micros();
 
-  printf("The result of the matrix multiplication is :\n");
-  {
-    RegionRequirement nodes_req(circuit.all_nodes, READ_ONLY, EXCLUSIVE, circuit.all_nodes);
-    nodes_req.add_field(FID_NODE_RESULT);
-    IndexIterator itr(runtime, ctx, circuit.all_nodes);
-    PhysicalRegion nodes = runtime->map_region(ctx, nodes_req);
-    RegionAccessor<AccessorType::Generic, double> fa_node_result =
-        nodes.get_field_accessor(FID_NODE_RESULT).typeify<double>();
-    while (itr.has_next())
-    {
-      ptr_t node_ptr = itr.next();
-      printf("%f\n", fa_node_result.read(node_ptr));
-    }
-  }
-  printf("The correct answer should be: \n");
-  std::vector<double> result(size, 0);
-  for (unsigned int i = 0; i < vec.size(); i++)
-  {
-    for (unsigned int j = 0; j < vec.size(); j++)
-    {
-      result[i] += mat[i][j] * vec[j];
-    }
-    printf("%f\n", result[i]);
-  }
+  //printf("The result of the matrix multiplication is :\n");
+  //{
+  //  RegionRequirement nodes_req(circuit.all_nodes, READ_ONLY, EXCLUSIVE, circuit.all_nodes);
+  //  nodes_req.add_field(FID_NODE_RESULT);
+  //  IndexIterator itr(runtime, ctx, circuit.all_nodes);
+  //  PhysicalRegion nodes = runtime->map_region(ctx, nodes_req);
+  //  RegionAccessor<AccessorType::Generic, double> fa_node_result =
+  //      nodes.get_field_accessor(FID_NODE_RESULT).typeify<double>();
+  //  while (itr.has_next())
+  //  {
+  //    ptr_t node_ptr = itr.next();
+  //    printf("%f\n", fa_node_result.read(node_ptr));
+  //  }
+  //}
+  //printf("The correct answer should be: \n");
+  //std::vector<double> result(size, 0);
+  //for (unsigned int i = 0; i < vec.size(); i++)
+  //{
+  //  for (unsigned int j = 0; j < vec.size(); j++)
+  //  {
+  //    result[i] += mat[i][j] * vec[j];
+  //  }
+  //  printf("%f\n", result[i]);
+  //}
   if (simulation_success)
     printf("SUCCESS!\n");
   else
@@ -242,30 +259,7 @@ void top_level_task(const Task *task,
 
   if (dump_values)
   {
-    RegionRequirement wires_req(circuit.all_wires, READ_ONLY, EXCLUSIVE, circuit.all_wires);
-    for (int i = 0; i < WIRE_SEGMENTS; i++)
-      wires_req.add_field(FID_CURRENT+i);
-    for (int i = 0; i < (WIRE_SEGMENTS-1); i++)
-      wires_req.add_field(FID_WIRE_VOLTAGE+i);
-    PhysicalRegion wires = runtime->map_region(ctx, wires_req);
-    wires.wait_until_valid();
-    RegionAccessor<AccessorType::Generic, float> fa_wire_currents[WIRE_SEGMENTS];
-    for (int i = 0; i < WIRE_SEGMENTS; i++)
-      fa_wire_currents[i] = wires.get_field_accessor(FID_CURRENT+i).typeify<float>();
-    RegionAccessor<AccessorType::Generic, float> fa_wire_voltages[WIRE_SEGMENTS-1];
-    for (int i = 0; i < (WIRE_SEGMENTS-1); i++)
-      fa_wire_voltages[i] = wires.get_field_accessor(FID_WIRE_VOLTAGE+i).typeify<float>();
-    IndexIterator itr(runtime, ctx, circuit.all_wires.get_index_space());
-    while (itr.has_next())
-    {
-      ptr_t wire_ptr = itr.next();
-      for (int i = 0; i < WIRE_SEGMENTS; ++i)
-        printf(" %.5g", fa_wire_currents[i].read(wire_ptr));
-      for (int i = 0; i < WIRE_SEGMENTS - 1; ++i)
-        printf(" %.5g", fa_wire_voltages[i].read(wire_ptr));
-      printf("\n");
-    }
-    runtime->unmap_region(ctx, wires);
+    ;
   }
 
   // Now we can destroy all the things that we made
@@ -300,12 +294,8 @@ int main(int argc, char **argv)
   // If we're running on the shared low-level then only register cpu tasks
 #ifdef SHARED_LOWLEVEL
   TaskHelper::register_cpu_variants<CalcNewCurrentsTask>();
-  TaskHelper::register_cpu_variants<DistributeChargeTask>();
-  TaskHelper::register_cpu_variants<UpdateVoltagesTask>();
 #else
   TaskHelper::register_hybrid_variants<CalcNewCurrentsTask>();
-  TaskHelper::register_hybrid_variants<DistributeChargeTask>();
-  TaskHelper::register_hybrid_variants<UpdateVoltagesTask>();
 #endif
   CheckTask::register_task();
   HighLevelRuntime::register_reduction_op<AccumulateCharge>(REDUCE_ID);
@@ -315,8 +305,7 @@ int main(int argc, char **argv)
 }
 
 void parse_input_args(char **argv, int argc, int &num_loops, int &num_pieces,
-                      int &nodes_per_piece, int &random_seed,
-                      int &steps, int &sync, bool &perform_checks,
+                      int &random_seed, bool &perform_checks,
                       bool &dump_values, int &size)
 {
   for (int i = 1; i < argc; i++) 
@@ -327,21 +316,9 @@ void parse_input_args(char **argv, int argc, int &num_loops, int &num_pieces,
       continue;
     }
 
-    if (!strcmp(argv[i], "-i")) 
-    {
-      steps = atoi(argv[++i]);
-      continue;
-    }
-
     if(!strcmp(argv[i], "-p")) 
     {
       num_pieces = atoi(argv[++i]);
-      continue;
-    }
-
-    if(!strcmp(argv[i], "-npp")) 
-    {
-      nodes_per_piece = atoi(argv[++i]);
       continue;
     }
 
@@ -354,12 +331,6 @@ void parse_input_args(char **argv, int argc, int &num_loops, int &num_pieces,
     if(!strcmp(argv[i], "-s")) 
     {
       random_seed = atoi(argv[++i]);
-      continue;
-    }
-
-    if(!strcmp(argv[i], "-sync")) 
-    {
-      sync = atoi(argv[++i]);
       continue;
     }
 
@@ -482,7 +453,7 @@ static T random_element(const std::vector<T> &vec)
 
 Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context ctx,
                         HighLevelRuntime *runtime, int num_pieces, int nodes_per_piece,
-                        int random_seed, int steps, std::vector<SparseElem>&sparse_mat, 
+                        int random_seed, std::vector<SparseElem>&sparse_mat, 
                         std::vector<double> &vec, std::vector<double> &b)
 {
   log_circuit.print("Initializing matrix multiplication...");
@@ -492,22 +463,11 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
   wires_req.add_field(FID_OUT_PTR);
   wires_req.add_field(FID_IN_LOC);
   wires_req.add_field(FID_OUT_LOC);
-  wires_req.add_field(FID_INDUCTANCE);
-  wires_req.add_field(FID_RESISTANCE);
-  wires_req.add_field(FID_WIRE_CAP);
-  for (int i = 0; i < WIRE_SEGMENTS; i++)
-    wires_req.add_field(FID_CURRENT+i);
-  for (int i = 0; i < (WIRE_SEGMENTS-1); i++)
-    wires_req.add_field(FID_WIRE_VOLTAGE+i);
   wires_req.add_field(FID_WIRE_VALUE);
   wires_req.add_field(FID_PIECE_NUM1);
   wires_req.add_field(FID_PIECE_NUM2);
 
   RegionRequirement nodes_req(ckt.all_nodes, READ_WRITE, EXCLUSIVE, ckt.all_nodes);
-  nodes_req.add_field(FID_NODE_CAP);
-  nodes_req.add_field(FID_LEAKAGE);
-  nodes_req.add_field(FID_CHARGE);
-  nodes_req.add_field(FID_NODE_VOLTAGE);
   nodes_req.add_field(FID_NODE_VALUE);
   nodes_req.add_field(FID_NODE_RESULT);
   nodes_req.add_field(FID_NODE_OFFSET);
@@ -531,20 +491,12 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
   privacy_map[1];
 
   // keep a O(1) indexable list of nodes in each piece for connecting wires
-  std::vector<std::vector<ptr_t> > piece_node_ptrs(num_pieces);
+  std::vector<std::vector<ptr_t> > piece_node_ptrs(num_pieces); // Node ptrs for each piece
   std::vector<int> piece_shared_nodes(num_pieces, 0); // num of shared nodes in each piece
 
   srand48(random_seed);
 
   nodes.wait_until_valid();
-  RegionAccessor<AccessorType::Generic, float> fa_node_cap = 
-    nodes.get_field_accessor(FID_NODE_CAP).typeify<float>();
-  RegionAccessor<AccessorType::Generic, float> fa_node_leakage = 
-    nodes.get_field_accessor(FID_LEAKAGE).typeify<float>();
-  RegionAccessor<AccessorType::Generic, float> fa_node_charge = 
-    nodes.get_field_accessor(FID_CHARGE).typeify<float>();
-  RegionAccessor<AccessorType::Generic, float> fa_node_voltage = 
-    nodes.get_field_accessor(FID_NODE_VOLTAGE).typeify<float>();
   RegionAccessor<AccessorType::Generic, double> fa_node_value = 
     nodes.get_field_accessor(FID_NODE_VALUE).typeify<double>();
   RegionAccessor<AccessorType::Generic, double> fa_node_result = 
@@ -578,14 +530,6 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
         if (i == 0)
           first_nodes[n] = node_ptr;
 
-          float capacitance = drand48() + 1.f;
-          fa_node_cap.write(node_ptr, capacitance);
-          float leakage = 0.1f * drand48();
-          fa_node_leakage.write(node_ptr, leakage);
-          fa_node_charge.write(node_ptr, 0.f);
-          float init_voltage = 2*drand48() - 1.f;
-          fa_node_voltage.write(node_ptr, init_voltage);
-
         fa_node_value.write(node_ptr, vec[current]);
         fa_node_result.write(node_ptr, 0.0);
         fa_node_offset.write(node_ptr, b[current]);
@@ -602,31 +546,26 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
     }
   }
   // verify the previous implementation
-  IndexIterator itr(runtime, ctx, ckt.all_nodes.get_index_space());
-    for (int n = 0; n < num_pieces; n++)
-    {
-      printf("node values for the %d th piece:\n", n);
-      for (int i = 0; i < nodes_per_piece; i++)
-      {
-        int current = n * nodes_per_piece + i;
-        if (current >= num_nodes)
-          break;
-        assert(itr.has_next());
-        ptr_t node_ptr = itr.next();
-        printf("%f ", fa_node_value.read(node_ptr));
-      }
-      printf("There are %d nodes in this piece\n", (int)piece_node_ptrs[n].size());
-      printf("\n");
-    }
-  printf("\n");
+  // Print the node values for each piece 
+  //IndexIterator itr(runtime, ctx, ckt.all_nodes.get_index_space());
+  //  for (int n = 0; n < num_pieces; n++)
+  //  {
+  //    printf("node values for the %d th piece:\n", n);
+  //    for (int i = 0; i < nodes_per_piece; i++)
+  //    {
+  //      int current = n * nodes_per_piece + i;
+  //      if (current >= num_nodes)
+  //        break;
+  //      assert(itr.has_next());
+  //      ptr_t node_ptr = itr.next();
+  //      printf("%f ", fa_node_value.read(node_ptr));
+  //    }
+  //    printf("There are %d nodes in this piece\n", (int)piece_node_ptrs[n].size());
+  //    printf("\n");
+  //  }
+  //printf("\n");
 
   wires.wait_until_valid();
-  RegionAccessor<AccessorType::Generic, float> fa_wire_currents[WIRE_SEGMENTS];
-  for (int i = 0; i < WIRE_SEGMENTS; i++)
-    fa_wire_currents[i] = wires.get_field_accessor(FID_CURRENT+i).typeify<float>();
-  RegionAccessor<AccessorType::Generic, float> fa_wire_voltages[WIRE_SEGMENTS-1];
-  for (int i = 0; i < (WIRE_SEGMENTS-1); i++)
-    fa_wire_voltages[i] = wires.get_field_accessor(FID_WIRE_VOLTAGE+i).typeify<float>();
   RegionAccessor<AccessorType::Generic, ptr_t> fa_wire_in_ptr = 
     wires.get_field_accessor(FID_IN_PTR).typeify<ptr_t>();
   RegionAccessor<AccessorType::Generic, ptr_t> fa_wire_out_ptr = 
@@ -635,12 +574,6 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
     wires.get_field_accessor(FID_IN_LOC).typeify<PointerLocation>();
   RegionAccessor<AccessorType::Generic, PointerLocation> fa_wire_out_loc = 
     wires.get_field_accessor(FID_OUT_LOC).typeify<PointerLocation>();
-  RegionAccessor<AccessorType::Generic, float> fa_wire_inductance = 
-    wires.get_field_accessor(FID_INDUCTANCE).typeify<float>();
-  RegionAccessor<AccessorType::Generic, float> fa_wire_resistance = 
-    wires.get_field_accessor(FID_RESISTANCE).typeify<float>();
-  RegionAccessor<AccessorType::Generic, float> fa_wire_cap = 
-    wires.get_field_accessor(FID_WIRE_CAP).typeify<float>();
 
   RegionAccessor<AccessorType::Generic, double> fa_wire_value = 
     wires.get_field_accessor(FID_WIRE_VALUE).typeify<double>();
@@ -665,19 +598,6 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
       ptr_t wire_ptr = itr.next();
       // Record the first wire pointer for this piece
 
-      for (int j = 0; j < WIRE_SEGMENTS; j++)
-        fa_wire_currents[j].write(wire_ptr, 0.f);
-      for (int j = 0; j < WIRE_SEGMENTS-1; j++) 
-        fa_wire_voltages[j].write(wire_ptr, 0.f);
-
-      float resistance = drand48() * 10.0 + 1.0;
-      fa_wire_resistance.write(wire_ptr, resistance);
-      // Keep inductance on the order of 1e-3 * dt to avoid resonance problems
-      float inductance = (drand48() + 0.1) * DELTAT * 1e-3;
-      fa_wire_inductance.write(wire_ptr, inductance);
-      float capacitance = drand48() * 0.1;
-      fa_wire_cap.write(wire_ptr, capacitance);
-      
 
       /******************newly added****************/
 
@@ -712,14 +632,6 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
         wire_owner_map[m1].points.insert(wire_ptr);
 
       /************newly added**********************/
-
-
-
-      // balance the number of wires in pieces
-      //if (wire_owner_map[m1].points.size() < wire_owner_map[m2].points.size())
-      //  wire_owner_map[m1].points.insert(wire_ptr);
-      //else
-      //  wire_owner_map[m2].points.insert(wire_ptr);
 
     }
   }
@@ -848,7 +760,6 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
     pieces[n].first_node = first_nodes[n];
 
     pieces[n].dt = DELTAT;
-    pieces[n].steps = steps;
     pieces[n].piece_num = n;
   }
 
