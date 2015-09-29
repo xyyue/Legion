@@ -321,7 +321,7 @@ void CalcNewCurrentsTask::cpu_base_impl(const CircuitPiece &p,
 
   for (int i = 0; i < (int)p.num_nodes; i++)
   {
-    ptr_t current = p.first_node + i;
+    ptr_t current = p.node_ptrs[i];
     double offset = fa_node_offset.read(current);
     double result;
     if (rt->safe_cast(ctx, current, pvt_region))

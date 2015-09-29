@@ -20,6 +20,7 @@
 #include <cmath>
 #include <cstdio>
 #include "legion.h"
+#include <vector>
 
 //#define DISABLE_MATH
 
@@ -101,6 +102,7 @@ struct CircuitPiece {
   ptr_t         first_wire;
   unsigned      num_nodes;
   ptr_t         first_node;
+  std::vector<ptr_t> node_ptrs;
 
   float         dt;
   int           steps;

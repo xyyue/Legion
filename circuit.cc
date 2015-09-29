@@ -29,6 +29,72 @@
 using namespace LegionRuntime::HighLevel;
 using namespace LegionRuntime::Accessor;
 
+static int get_next_line(FILE *fp, char *buf, int bufsize)
+{
+int i, cval, len;
+char *c;
+
+  while (1)
+  {
+    c = fgets(buf, bufsize, fp);
+
+    if (c == NULL)
+      return 0;  /* end of file */
+
+    len = strlen(c);
+
+    for (i=0, c=buf; i < len; i++, c++)
+    {
+      cval = (int)*c;
+      if (isspace(cval) == 0) break;
+    }
+    if (i == len) continue;   /* blank line */
+    if (*c == '#') continue;  /* comment */ 
+    if (c != buf)
+    {
+      strcpy(buf, c);
+    }
+    break;
+  }
+  return strlen(buf); /* number * of * characters * */
+}
+
+
+int get_next_int(FILE* fp)
+{
+  int value;
+  char buf[512];
+  int bufsize = 512;
+
+  int num = get_next_line(fp, buf, bufsize);
+  if (num == 0)
+    return -1;
+  sscanf(buf, "%d", &value);
+  return value;
+}
+
+int get_piece_num(std::vector<std::vector<int> > &partition, int num)
+{
+  for (int i = 0; i < (int)partition.size(); i++)
+    for (int j = 0; j < (int) partition.size(); j++)
+      if (num == partition[i][j])
+        return i;
+  return -1;
+}
+
+ptr_t get_ith_ptr(HighLevelRuntime *runtime, Context ctx, IndexSpace index_space, int i)
+{
+  IndexIterator itr(runtime, ctx, index_space);
+  i++;
+  ptr_t node_ptr;
+  for (int j = 0; j < i; j++)
+  {
+    assert(itr.has_next());
+    node_ptr = itr.next();
+  }
+  return node_ptr;
+}
+
 void fill_mat(std::vector<std::vector<double> > &mat, std::vector<double> &vec, std::vector<double> &b)
 {
   int size = (int)vec.size();
@@ -60,6 +126,39 @@ void dense_to_sparse(std::vector<std::vector<double> >&mat, std::vector<SparseEl
       }
 }
                                                                                                                                   
+void write_out(std::vector<std::vector<double> > &mat, std::vector<SparseElem>&sparse_mat, 
+                std::vector<double> &vec, bool &mat_gen)
+{
+  FILE * fp = fopen("GRAPH.txt","w+");
+  int size = (int) vec.size();
+  fprintf(fp, "%d\n", size);
+  std::vector<std::vector<int> > nbr(size, std::vector<int>()); 
+  int total_neighbor = 0;
+  for (int i = 0; i < (int)sparse_mat.size(); i++)
+  {
+    int x = sparse_mat[i].x;
+    int y = sparse_mat[i].y;
+    if (x != y)
+    {
+      nbr[x].push_back(y);
+      nbr[y].push_back(x);
+      total_neighbor += 2;
+    }
+  }
+  fprintf(fp, "%d\n", total_neighbor);
+  
+  for (int i = 0; i < size; i++)
+  {
+    fprintf(fp, "%d ", i);
+    fprintf(fp, "%d ", (int)nbr[i].size());
+    for (int j = 0; j < (int)nbr[i].size(); j++)
+      fprintf(fp, "%d ", nbr[i][j]);
+
+    fprintf(fp, "\n");
+  }
+  exit(0);
+
+}
 void print_mat(std::vector<std::vector<double> > &mat, std::vector<SparseElem>&sparse_mat, 
                 std::vector<double> &vec, std::vector<double> &b)
 {
@@ -87,10 +186,11 @@ LegionRuntime::Logger::Category log_circuit("circuit");
 
 // Utility functions (forward declarations)
 void parse_input_args(char **argv, int argc, int &num_loops, int &num_pieces,
-                      int &random_seed, bool &perform_checks, bool &dump_values, int &size);
+                      int &random_seed, bool &perform_checks, bool &dump_values,
+                      int &size, bool &mat_gen);
 
 Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context ctx,
-                        HighLevelRuntime *runtime, int num_pieces, int nodes_per_piece,
+                        HighLevelRuntime *runtime, int &num_pieces, int nodes_per_piece,
                         int random_seed, std::vector<SparseElem>&sparse_mat, 
                         std::vector<double> &vec, std::vector<double> &b);
 
@@ -109,12 +209,14 @@ void top_level_task(const Task *task,
   bool perform_checks = false;
   bool dump_values = false;
   int size = 7;
+  bool mat_gen = false;
   
   const InputArgs &command_args = HighLevelRuntime::get_input_args();
   char **argv = command_args.argv;
   int argc = command_args.argc;
 
-  parse_input_args(argv, argc, num_loops, num_pieces, random_seed, perform_checks, dump_values, size);
+  parse_input_args(argv, argc, num_loops, num_pieces, random_seed,
+                    perform_checks, dump_values, size, mat_gen);
   std::vector<std::vector<double> > mat(size, std::vector<double>(size, 0)); // the size x size matrix is initially filled with 0s.
   std::vector<double> vec(size, 0); // This is the vector which is going to multiply the matrix.
   std::vector<double> b(size, 0);   // This is the vector of the offset.
@@ -122,6 +224,8 @@ void top_level_task(const Task *task,
   fill_mat(mat, vec, b);
   dense_to_sparse(mat, sparse_mat); 
   print_mat(mat, sparse_mat, vec, b);
+  if (mat_gen)
+    write_out(mat, sparse_mat, vec, mat_gen);
 
   log_circuit.print("circuit settings: loops=%d pieces=%d " "seed=%d", num_loops, num_pieces, random_seed);
 
@@ -305,8 +409,8 @@ int main(int argc, char **argv)
 }
 
 void parse_input_args(char **argv, int argc, int &num_loops, int &num_pieces,
-                      int &random_seed, bool &perform_checks,
-                      bool &dump_values, int &size)
+                      int &random_seed, bool &perform_checks, bool &dump_values, 
+                      int &size, bool &mat_gen)
 {
   for (int i = 1; i < argc; i++) 
   {
@@ -337,6 +441,12 @@ void parse_input_args(char **argv, int argc, int &num_loops, int &num_pieces,
     if(!strcmp(argv[i], "-checks"))
     {
       perform_checks = true;
+      continue;
+    }
+
+    if(!strcmp(argv[i], "-gen"))
+    {
+      mat_gen = true;
       continue;
     }
 
@@ -452,7 +562,7 @@ static T random_element(const std::vector<T> &vec)
 }
 
 Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context ctx,
-                        HighLevelRuntime *runtime, int num_pieces, int nodes_per_piece,
+                        HighLevelRuntime *runtime, int &num_pieces, int nodes_per_piece,
                         int random_seed, std::vector<SparseElem>&sparse_mat, 
                         std::vector<double> &vec, std::vector<double> &b)
 {
@@ -490,6 +600,9 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
   privacy_map[0];
   privacy_map[1];
 
+  FILE *fp = fopen("partition.txt", "r");
+  num_pieces = get_next_int(fp);
+  pieces.resize(num_pieces);
   // keep a O(1) indexable list of nodes in each piece for connecting wires
   std::vector<std::vector<ptr_t> > piece_node_ptrs(num_pieces); // Node ptrs for each piece
   std::vector<int> piece_shared_nodes(num_pieces, 0); // num of shared nodes in each piece
@@ -516,32 +629,52 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
     node_allocator.alloc(num_nodes);
   }
   // Write the values of the nodes.
+  std::vector<std::vector<int> > partition(num_pieces, std::vector<int>());
+  std::vector<std::vector<ptr_t> > pvt_ptrs(num_pieces);
+  for (int i = 0; i < num_pieces; i++)
   {
-    IndexIterator itr(runtime, ctx, ckt.all_nodes.get_index_space());
-    for (int n = 0; n < num_pieces; n++)
+    int num = get_next_int(fp);
+    for (int j = 0; j < num; j++)
     {
-      for (int i = 0; i < nodes_per_piece; i++)
-      {
-        int current = n * nodes_per_piece + i;
-        if (current >= num_nodes)
-          break;
-        assert(itr.has_next());
-        ptr_t node_ptr = itr.next();
-        if (i == 0)
-          first_nodes[n] = node_ptr;
+      partition[i].push_back(get_next_int(fp));
+    }
+  }
 
-        fa_node_value.write(node_ptr, vec[current]);
+  //for (int i = 0; i < num_pieces; i++)
+  //{
+  //  printf("\nthe %d piece:\n", i);
+  //  for (int j = 0; j < (int)partition[i].size(); j++)
+  //    printf("%d ", partition[i][j]);
+
+  //}
+
+  //TODO:: the first_nodes are useless now!!!!
+  printf("BBBBB\n");
+  {
+    printf("num_pieces is %d !!!\n", num_pieces);
+    for (int i = 0; i < num_pieces; i++)
+    {
+      for (int j = 0; j < (int)partition[i].size(); j++)
+      {
+        int idx = partition[i][j];
+        printf("idx is %d\n", idx);
+        ptr_t node_ptr = get_ith_ptr(runtime, ctx, ckt.all_nodes.get_index_space(), idx);
+        pvt_ptrs[i].push_back(node_ptr);
+
+        fa_node_value.write(node_ptr, vec[idx]);
         fa_node_result.write(node_ptr, 0.0);
-        fa_node_offset.write(node_ptr, b[current]);
+        fa_node_offset.write(node_ptr, b[idx]);
 
         // Just put everything in everyones private map at the moment       
         // We'll pull pointers out of here later as nodes get tied to 
         // wires that are non-local
-        private_node_map[n].points.insert(node_ptr);
+        private_node_map[i].points.insert(node_ptr);
         privacy_map[0].points.insert(node_ptr);
-        locator_node_map[n].points.insert(node_ptr);
-	      piece_node_ptrs[n].push_back(node_ptr);
-        inside_node_map[n].points.insert(node_ptr);
+        locator_node_map[i].points.insert(node_ptr);
+        printf("i = %d\n", i);
+        printf("the size is %d\n", (int)piece_node_ptrs[i].size());
+	      //piece_node_ptrs[i].push_back(node_ptr);
+        inside_node_map[i].points.insert(node_ptr);
       }
     }
   }
@@ -601,19 +734,24 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
 
       /******************newly added****************/
 
-      int m1 = sparse_mat[i].x / nodes_per_piece;
-      int n1 = sparse_mat[i].x % nodes_per_piece;
-      ptr_t p1 = piece_node_ptrs[m1][n1];
+      //int m1 = sparse_mat[i].x / nodes_per_piece;
+      //int n1 = sparse_mat[i].x % nodes_per_piece;
+      //ptr_t p1 = piece_node_ptrs[m1][n1];
+      ptr_t p1 = get_ith_ptr(runtime, ctx, ckt.all_nodes.get_index_space(), sparse_mat[i].x);
       fa_wire_in_ptr.write(wire_ptr, p1);
 
 
-      int m2 = sparse_mat[i].y / nodes_per_piece;
-      int n2 = sparse_mat[i].y % nodes_per_piece;
-      ptr_t p2 = piece_node_ptrs[m2][n2];
+      //int m2 = sparse_mat[i].y / nodes_per_piece;
+      //int n2 = sparse_mat[i].y % nodes_per_piece;
+      //ptr_t p2 = piece_node_ptrs[m2][n2];
+      ptr_t p2 = get_ith_ptr(runtime, ctx, ckt.all_nodes.get_index_space(), sparse_mat[i].y);
       fa_wire_out_ptr.write(wire_ptr, p2);
 
       fa_wire_value.write(wire_ptr, sparse_mat[i].z); 
 
+      int m1 = get_piece_num(partition, sparse_mat[i].x);
+      int m2 = get_piece_num(partition, sparse_mat[i].y);
+      
       fa_piece_num1.write(wire_ptr, m1); // corresponding to in_ptr
       fa_piece_num2.write(wire_ptr, m2); // corresponding to out_ptr
       // These nodes are no longer private
@@ -639,20 +777,18 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
   // Second pass: make some random fraction of the private nodes shared
   {
     IndexIterator itr(runtime, ctx, ckt.all_nodes.get_index_space()); 
-    for (int n = 0; n < num_pieces; n++)
+    for (int i = 0; i < num_pieces; i++)
     {
-      for (int i = 0; i < nodes_per_piece; i++)
+      for (int j = 0; j < (int)partition[i].size(); j++)
       {
-        int current = n * nodes_per_piece + i;
-        if (current >= num_nodes)
-          break;
-        assert(itr.has_next());
-        ptr_t node_ptr = itr.next();
+        int idx = partition[i][j];
+        ptr_t node_ptr = get_ith_ptr(runtime, ctx, ckt.all_nodes.get_index_space(), idx);
+
         if (privacy_map[0].points.find(node_ptr) == privacy_map[0].points.end()) // if shared
         {
-          private_node_map[n].points.erase(node_ptr);
+          private_node_map[i].points.erase(node_ptr);
           // node is now shared
-          shared_node_map[n].points.insert(node_ptr);
+          shared_node_map[i].points.insert(node_ptr);
           locator_acc.write(node_ptr,SHARED_PTR); // node is shared 
         }
         else
@@ -756,8 +892,9 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
 
     pieces[n].num_wires = wire_owner_map[n].points.size();
     pieces[n].first_wire = first_wires[n];
-    pieces[n].num_nodes = piece_node_ptrs[n].size();
+    pieces[n].num_nodes = (int)pvt_ptrs[n].size();//piece_node_ptrs[n].size();
     pieces[n].first_node = first_nodes[n];
+    pieces[n].node_ptrs = pvt_ptrs[n];
 
     pieces[n].dt = DELTAT;
     pieces[n].piece_num = n;
