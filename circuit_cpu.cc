@@ -69,7 +69,7 @@ CalcNewCurrentsTask::CalcNewCurrentsTask(LogicalPartition lp_pvt_wires,
 {
   
   RegionRequirement rr_wires(lp_pvt_wires, 0/*identity*/,
-                             READ_ONLY, EXCLUSIVE, lr_all_wires); // Second region
+                             READ_ONLY, EXCLUSIVE, lr_all_wires); // 0th region
   rr_wires.add_field(FID_IN_PTR);
   rr_wires.add_field(FID_OUT_PTR);
   rr_wires.add_field(FID_IN_LOC);
@@ -80,37 +80,37 @@ CalcNewCurrentsTask::CalcNewCurrentsTask(LogicalPartition lp_pvt_wires,
   add_region_requirement(rr_wires);
 
   RegionRequirement rr_private(lp_pvt_nodes, 0/*identity*/,
-                               READ_ONLY, EXCLUSIVE, lr_all_nodes); // Third Region
+                               READ_ONLY, EXCLUSIVE, lr_all_nodes); // 1th Region
   rr_private.add_field(FID_NODE_VALUE);
   rr_private.add_field(FID_NODE_OFFSET);
   add_region_requirement(rr_private);
 
   RegionRequirement rr_shared(lp_shr_nodes, 0/*identity*/,
-                              READ_ONLY, EXCLUSIVE, lr_all_nodes);// 4th Region
+                              READ_ONLY, EXCLUSIVE, lr_all_nodes);// 2th Region
   rr_shared.add_field(FID_NODE_VALUE);
   rr_shared.add_field(FID_NODE_OFFSET);
   add_region_requirement(rr_shared);
 
   RegionRequirement rr_ghost(lp_ghost_nodes, 0/*identity*/,
-                             READ_ONLY, EXCLUSIVE, lr_all_nodes); // 5th Region
+                             READ_ONLY, EXCLUSIVE, lr_all_nodes); // 3th Region
   rr_ghost.add_field(FID_NODE_VALUE);
   add_region_requirement(rr_ghost);
 
 
   RegionRequirement rr_private_result(lp_pvt_nodes, 0/*identity*/,  // add the result field 
-                             READ_WRITE, EXCLUSIVE, lr_all_nodes);  // 6th Region
+                             READ_WRITE, EXCLUSIVE, lr_all_nodes);  // 4th Region
   rr_private_result.add_field(FID_NODE_RESULT);
   add_region_requirement(rr_private_result);
 
 
   RegionRequirement rr_shared_result(lp_shr_nodes, 0/*identity*/,
-                             READ_WRITE, EXCLUSIVE, lr_all_nodes);  // 7th Region
+                             READ_WRITE, EXCLUSIVE, lr_all_nodes);  // 5th Region
   rr_shared_result.add_field(FID_NODE_RESULT);
   add_region_requirement(rr_shared_result);
 
 
   RegionRequirement rr_inside(lp_inside_nodes, 0/*identity*/,
-                               READ_WRITE, EXCLUSIVE, lr_all_nodes); // 8th  Region
+                               READ_WRITE, EXCLUSIVE, lr_all_nodes); // 6th  Region
   rr_inside.add_field(FID_NODE_OFFSET);
   rr_inside.add_field(FID_NODE_RESULT);
   add_region_requirement(rr_inside);
@@ -259,10 +259,10 @@ void CalcNewCurrentsTask::cpu_base_impl(const CircuitPiece &p,
     regions[4].get_field_accessor(FID_NODE_RESULT).typeify<double>();
   RegionAccessor<AccessorType::Generic, double> fa_shr_result = 
     regions[5].get_field_accessor(FID_NODE_RESULT).typeify<double>();
-  RegionAccessor<AccessorType::Generic, double> fa_node_offset = 
-    regions[6].get_field_accessor(FID_NODE_OFFSET).typeify<double>();
-  RegionAccessor<AccessorType::Generic, double> fa_node_result = 
-    regions[6].get_field_accessor(FID_NODE_RESULT).typeify<double>();
+  //RegionAccessor<AccessorType::Generic, double> fa_node_offset = 
+  //  regions[6].get_field_accessor(FID_NODE_OFFSET).typeify<double>();
+  //RegionAccessor<AccessorType::Generic, double> fa_node_result = 
+  //  regions[6].get_field_accessor(FID_NODE_RESULT).typeify<double>();
 
   LogicalRegion pvt_region = regions[1].get_logical_region();
   LogicalRegion shr_region = regions[2].get_logical_region();
@@ -319,19 +319,19 @@ void CalcNewCurrentsTask::cpu_base_impl(const CircuitPiece &p,
 
   }
 
-  for (int i = 0; i < (int)p.num_nodes; i++)
-  {
-    ptr_t current = p.node_ptrs[i];
-    double offset = fa_node_offset.read(current);
-    double result;
-    if (rt->safe_cast(ctx, current, pvt_region))
-      result = fa_pvt_result.read(current);
-    else
-      result = fa_shr_result.read(current); 
-    //printf("previous value is %f\n", result);
-    //printf("current value is %f + %f = %f\n", result, offset, offset + result);
-    fa_node_result.write(current, offset + result);
-  }
+  //for (int i = 0; i < (int)p.num_nodes; i++)
+  //{
+  //  ptr_t current = p.node_ptrs[i];
+  //  double offset = fa_node_offset.read(current);
+  //  double result;
+  //  if (rt->safe_cast(ctx, current, pvt_region))
+  //    result = fa_pvt_result.read(current);
+  //  else
+  //    result = fa_shr_result.read(current); 
+  //  //printf("previous value is %f\n", result);
+  //  //printf("current value is %f + %f = %f\n", result, offset, offset + result);
+  //  fa_node_result.write(current, offset + result);
+  //}
 
   //printf("end of a task from piece %d\n", piece_num);
 }

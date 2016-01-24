@@ -76,7 +76,7 @@ int get_next_int(FILE* fp)
 int get_piece_num(std::vector<std::vector<int> > &partition, int num)
 {
   for (int i = 0; i < (int)partition.size(); i++)
-    for (int j = 0; j < (int) partition.size(); j++)
+    for (int j = 0; j < (int) partition[i].size(); j++) // Have made the change
       if (num == partition[i][j])
         return i;
   return -1;
@@ -156,9 +156,10 @@ void write_out(std::vector<std::vector<double> > &mat, std::vector<SparseElem>&s
 
     fprintf(fp, "\n");
   }
-  exit(0);
 
+  fclose(fp);
 }
+
 void print_mat(std::vector<std::vector<double> > &mat, std::vector<SparseElem>&sparse_mat, 
                 std::vector<double> &vec, std::vector<double> &b)
 {
@@ -221,20 +222,26 @@ void top_level_task(const Task *task,
   std::vector<double> vec(size, 0); // This is the vector which is going to multiply the matrix.
   std::vector<double> b(size, 0);   // This is the vector of the offset.
   std::vector<SparseElem> sparse_mat;
+  srand48(random_seed);
+
   fill_mat(mat, vec, b);
   dense_to_sparse(mat, sparse_mat); 
   print_mat(mat, sparse_mat, vec, b);
-  if (mat_gen)
-    write_out(mat, sparse_mat, vec, mat_gen);
+  write_out(mat, sparse_mat, vec, mat_gen);
 
   log_circuit.print("circuit settings: loops=%d pieces=%d " "seed=%d", num_loops, num_pieces, random_seed);
+
+  std::cout << "Executing the system call!!!!!!!!!!!!!!!!!!!!!!!!!" << std::endl;
+  int r = system("mpirun -n 4 simpleGRAPH");
+  std::cout << "After the system call!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" << std::endl;
+  if (r == 0);
+
 
   Circuit circuit;
   {
     int num_circuit_nodes = size;
     int num_circuit_wires = (int)sparse_mat.size();// This may make the code not working well
-    nodes_per_piece = (num_circuit_nodes % num_pieces == 0) ? (num_circuit_nodes
-    / num_pieces) : (num_circuit_nodes / num_pieces + 1);
+    nodes_per_piece = (num_circuit_nodes % num_pieces == 0) ? (num_circuit_nodes / num_pieces) : (num_circuit_nodes / num_pieces + 1);
     //printf("the wire number is %d\n", calc_wire_num(sparse_mat));
 
     // Make index spaces
@@ -282,8 +289,8 @@ void top_level_task(const Task *task,
                                    circuit.all_wires, circuit.all_nodes, launch_domain, local_args);
 
   printf("Starting main simulation loop\n");
-  double ts_start, ts_end;
-  ts_start = LegionRuntime::TimeStamp::get_current_time_in_micros();
+  //////////////////double ts_start, ts_end;
+  //////////////////ts_start = LegionRuntime::TimeStamp::get_current_time_in_micros();
   // Run the main loop
   bool simulation_success = true;
 
@@ -312,11 +319,12 @@ void top_level_task(const Task *task,
         fa_node_value.write(node_ptr, result);
         fa_node_result.write(node_ptr, 0.0);
       }
+      runtime->unmap_region(ctx, nodes);
     }
   }
   
   //printf("After the task!!!\n");
-  ts_end = LegionRuntime::TimeStamp::get_current_time_in_micros();
+  //ts_end = LegionRuntime::TimeStamp::get_current_time_in_micros();
 
   //printf("The result of the matrix multiplication is :\n");
   //{
@@ -342,29 +350,31 @@ void top_level_task(const Task *task,
   //  }
   //  printf("%f\n", result[i]);
   //}
-  if (simulation_success)
-    printf("SUCCESS!\n");
-  else
-    printf("FAILURE!\n");
-  {
-    double sim_time = 1e-6 * (ts_end - ts_start);
-    printf("ELAPSED TIME = %7.3f s\n", sim_time);
 
-    // Compute the floating point operations per second
-    long operations = 1000;
-    // multiply by the number of loops
-    operations *= num_loops;
 
-    // Compute the number of gflops
-    double gflops = (1e-9*operations)/sim_time;
-    printf("GFLOPS = %7.3f GFLOPS\n", gflops);
-  }
-  log_circuit.print("simulation complete - destroying regions");
+  /////////////////////////if (simulation_success)
+  /////////////////////////  printf("SUCCESS!\n");
+  /////////////////////////else
+  /////////////////////////  printf("FAILURE!\n");
+  /////////////////////////{
+  /////////////////////////  double sim_time = 1e-6 * (ts_end - ts_start);
+  /////////////////////////  printf("ELAPSED TIME = %7.3f s\n", sim_time);
 
-  if (dump_values)
-  {
-    ;
-  }
+  /////////////////////////  // Compute the floating point operations per second
+  /////////////////////////  long operations = 1000;
+  /////////////////////////  // multiply by the number of loops
+  /////////////////////////  operations *= num_loops;
+
+  /////////////////////////  // Compute the number of gflops
+  /////////////////////////  double gflops = (1e-9*operations)/sim_time;
+  /////////////////////////  printf("GFLOPS = %7.3f GFLOPS\n", gflops);
+  /////////////////////////}
+  /////////////////////////log_circuit.print("simulation complete - destroying regions");
+
+  /////////////////////////if (dump_values)
+  /////////////////////////{
+  /////////////////////////  ;
+  /////////////////////////}
 
   // Now we can destroy all the things that we made
   {
@@ -584,6 +594,7 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
 
   RegionRequirement locator_req(ckt.node_locator, READ_WRITE, EXCLUSIVE, ckt.node_locator);
   locator_req.add_field(FID_LOCATOR);
+
   PhysicalRegion wires = runtime->map_region(ctx, wires_req);
   PhysicalRegion nodes = runtime->map_region(ctx, nodes_req);
   PhysicalRegion locator = runtime->map_region(ctx, locator_req);
@@ -614,8 +625,8 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
     nodes.get_field_accessor(FID_NODE_VALUE).typeify<double>();
   RegionAccessor<AccessorType::Generic, double> fa_node_result = 
     nodes.get_field_accessor(FID_NODE_RESULT).typeify<double>();
-  RegionAccessor<AccessorType::Generic, double> fa_node_offset = 
-    nodes.get_field_accessor(FID_NODE_OFFSET).typeify<double>();
+  //RegionAccessor<AccessorType::Generic, double> fa_node_offset = 
+  //  nodes.get_field_accessor(FID_NODE_OFFSET).typeify<double>();
 
   locator.wait_until_valid();
   RegionAccessor<AccessorType::Generic, PointerLocation> locator_acc = 
@@ -663,18 +674,18 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
 
         fa_node_value.write(node_ptr, vec[idx]);
         fa_node_result.write(node_ptr, 0.0);
-        fa_node_offset.write(node_ptr, b[idx]);
+        //fa_node_offset.write(node_ptr, b[idx]);
 
         // Just put everything in everyones private map at the moment       
         // We'll pull pointers out of here later as nodes get tied to 
         // wires that are non-local
-        private_node_map[i].points.insert(node_ptr);
-        privacy_map[0].points.insert(node_ptr);
+        private_node_map[i].points.insert(node_ptr); // The private nodes in a piece
+        privacy_map[0].points.insert(node_ptr);      // All the private nodes
         locator_node_map[i].points.insert(node_ptr);
         printf("i = %d\n", i);
         printf("the size is %d\n", (int)piece_node_ptrs[i].size());
-	      //piece_node_ptrs[i].push_back(node_ptr);
-        inside_node_map[i].points.insert(node_ptr);
+	      piece_node_ptrs[i].push_back(node_ptr);
+        inside_node_map[i].points.insert(node_ptr);  // The private and shared nodes in a piece
       }
     }
   }
