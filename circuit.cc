@@ -240,7 +240,7 @@ void top_level_task(const Task *task,
   Circuit circuit;
   {
     int num_circuit_nodes = size;
-    int num_circuit_wires = (int)sparse_mat.size();// This may make the code not working well
+    int num_circuit_wires = (int)sparse_mat.size();//TODO: This may make the code not working well
     nodes_per_piece = (num_circuit_nodes % num_pieces == 0) ? (num_circuit_nodes / num_pieces) : (num_circuit_nodes / num_pieces + 1);
     //printf("the wire number is %d\n", calc_wire_num(sparse_mat));
 
@@ -679,9 +679,10 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
         // Just put everything in everyones private map at the moment       
         // We'll pull pointers out of here later as nodes get tied to 
         // wires that are non-local
-        private_node_map[i].points.insert(node_ptr); // The private nodes in a piece
+        private_node_map[i].points.insert(node_ptr); // The private nodes in a piece, 
+                                                     // the shared will be deleted bellow
         privacy_map[0].points.insert(node_ptr);      // All the private nodes
-        locator_node_map[i].points.insert(node_ptr);
+        locator_node_map[i].points.insert(node_ptr); // TODO: may be useless?
         printf("i = %d\n", i);
         printf("the size is %d\n", (int)piece_node_ptrs[i].size());
 	      piece_node_ptrs[i].push_back(node_ptr);
@@ -891,12 +892,15 @@ Partitions load_circuit(Circuit &ckt, std::vector<CircuitPiece> &pieces, Context
     pieces[n].pvt_nodes = runtime->get_logical_subregion_by_color(ctx, result.pvt_nodes, n);
     sprintf(buf, "private_nodes_of_piece_%d", n);
     runtime->attach_name(pieces[n].pvt_nodes, buf);
+
     pieces[n].shr_nodes = runtime->get_logical_subregion_by_color(ctx, result.shr_nodes, n);
     sprintf(buf, "shared_nodes_of_piece_%d", n);
     runtime->attach_name(pieces[n].shr_nodes, buf);
+
     pieces[n].ghost_nodes = runtime->get_logical_subregion_by_color(ctx, result.ghost_nodes, n);
     sprintf(buf, "ghost_nodes_of_piece_%d", n);
     runtime->attach_name(pieces[n].ghost_nodes, buf);
+
     pieces[n].pvt_wires = runtime->get_logical_subregion_by_color(ctx, result.pvt_wires, n);
     sprintf(buf, "private_wires_of_piece_%d", n);
     runtime->attach_name(pieces[n].pvt_wires, buf);

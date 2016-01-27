@@ -82,13 +82,13 @@ CalcNewCurrentsTask::CalcNewCurrentsTask(LogicalPartition lp_pvt_wires,
   RegionRequirement rr_private(lp_pvt_nodes, 0/*identity*/,
                                READ_ONLY, EXCLUSIVE, lr_all_nodes); // 1th Region
   rr_private.add_field(FID_NODE_VALUE);
-  rr_private.add_field(FID_NODE_OFFSET);
+  //rr_private.add_field(FID_NODE_OFFSET);
   add_region_requirement(rr_private);
 
   RegionRequirement rr_shared(lp_shr_nodes, 0/*identity*/,
                               READ_ONLY, EXCLUSIVE, lr_all_nodes);// 2th Region
   rr_shared.add_field(FID_NODE_VALUE);
-  rr_shared.add_field(FID_NODE_OFFSET);
+  //rr_shared.add_field(FID_NODE_OFFSET);
   add_region_requirement(rr_shared);
 
   RegionRequirement rr_ghost(lp_ghost_nodes, 0/*identity*/,
