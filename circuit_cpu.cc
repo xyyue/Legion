@@ -97,16 +97,16 @@ CalcNewCurrentsTask::CalcNewCurrentsTask(LogicalPartition lp_pvt_wires,
   add_region_requirement(rr_ghost);
 
 
-  RegionRequirement rr_private_result(lp_pvt_nodes, 0/*identity*/,  // add the result field 
-                             READ_WRITE, EXCLUSIVE, lr_all_nodes);  // 4th Region
-  rr_private_result.add_field(FID_NODE_RESULT);
-  add_region_requirement(rr_private_result);
+  //RegionRequirement rr_private_result(lp_pvt_nodes, 0/*identity*/,  // add the result field 
+  //                           READ_WRITE, EXCLUSIVE, lr_all_nodes);  // 4th Region
+  //rr_private_result.add_field(FID_NODE_RESULT);
+  //add_region_requirement(rr_private_result);
 
 
-  RegionRequirement rr_shared_result(lp_shr_nodes, 0/*identity*/,
-                             READ_WRITE, EXCLUSIVE, lr_all_nodes);  // 5th Region
-  rr_shared_result.add_field(FID_NODE_RESULT);
-  add_region_requirement(rr_shared_result);
+  //RegionRequirement rr_shared_result(lp_shr_nodes, 0/*identity*/,
+  //                           READ_WRITE, EXCLUSIVE, lr_all_nodes);  // 5th Region
+  //rr_shared_result.add_field(FID_NODE_RESULT);
+  //add_region_requirement(rr_shared_result);
 
 
   RegionRequirement rr_inside(lp_inside_nodes, 0/*identity*/,
@@ -162,8 +162,7 @@ static inline double get_node_value(Context ctx, HighLevelRuntime* rt,
  
 template<typename AT>
 void process_result(Context ctx, HighLevelRuntime* rt, 
-                    const RegionAccessor<AT,double> &priv,
-                    const RegionAccessor<AT,double> &shr,
+                    const RegionAccessor<AT,double> &in_node,
                     LogicalRegion &pvt_region,
                     LogicalRegion &shr_region,
                     ptr_t ptr,
@@ -171,20 +170,26 @@ void process_result(Context ctx, HighLevelRuntime* rt,
                     double node_value)
 {
   double result;
-  if (rt->safe_cast(ctx, ptr, pvt_region))
-  {
-    result = priv.read(ptr);
-    //printf("Previous: %f\n", result);
-    //printf("New: Previous + %f * %f = %f\n", wire_value, node_value, result + wire_value * node_value);
-    priv.write(ptr, result + wire_value * node_value);
-  }
-  else if (rt->safe_cast(ctx, ptr, shr_region))
-  {
-    result = shr.read(ptr);
-    //printf("Previous: %f\n", result);
-    //printf("New: Previous + %f * %f = %f\n", wire_value, node_value, result + wire_value * node_value);
-    shr.write(ptr, result + wire_value * node_value);
-  }
+  //if (rt->safe_cast(ctx, ptr, pvt_region))
+  //{
+  //  result = priv.read(ptr);
+  //  //printf("Previous: %f\n", result);
+  //  //printf("New: Previous + %f * %f = %f\n", wire_value, node_value, result + wire_value * node_value);
+  //  priv.write(ptr, result + wire_value * node_value);
+  //}
+  //else if (rt->safe_cast(ctx, ptr, shr_region))
+  //{
+  //  result = shr.read(ptr);
+  //  //printf("Previous: %f\n", result);
+  //  //printf("New: Previous + %f * %f = %f\n", wire_value, node_value, result + wire_value * node_value);
+  //  shr.write(ptr, result + wire_value * node_value);
+  //}
+  result = in_node.read(ptr); 
+  in_node.write(ptr, result + wire_value * node_value);
+
+
+
+
   //double in_result = get_node_result(ctx, rt, fa_pvt_result, fa_shr_result, pvt_region, shr_region, in_loc, in_ptr);
   //write_node_value(fa_pvt_result, fa_shr_result, in_loc,
   //                in_ptr, in_result + wire_value * out_node_value);
@@ -255,14 +260,14 @@ void CalcNewCurrentsTask::cpu_base_impl(const CircuitPiece &p,
     regions[2].get_field_accessor(FID_NODE_VALUE).typeify<double>();
   RegionAccessor<AccessorType::Generic, double> fa_ghost_value = 
     regions[3].get_field_accessor(FID_NODE_VALUE).typeify<double>();
-  RegionAccessor<AccessorType::Generic, double> fa_pvt_result = 
-    regions[4].get_field_accessor(FID_NODE_RESULT).typeify<double>();
-  RegionAccessor<AccessorType::Generic, double> fa_shr_result = 
-    regions[5].get_field_accessor(FID_NODE_RESULT).typeify<double>();
+  //RegionAccessor<AccessorType::Generic, double> fa_pvt_result = 
+  //  regions[4].get_field_accessor(FID_NODE_RESULT).typeify<double>();
+  //RegionAccessor<AccessorType::Generic, double> fa_shr_result = 
+  //  regions[5].get_field_accessor(FID_NODE_RESULT).typeify<double>();
   //RegionAccessor<AccessorType::Generic, double> fa_node_offset = 
   //  regions[6].get_field_accessor(FID_NODE_OFFSET).typeify<double>();
-  //RegionAccessor<AccessorType::Generic, double> fa_node_result = 
-  //  regions[6].get_field_accessor(FID_NODE_RESULT).typeify<double>();
+  RegionAccessor<AccessorType::Generic, double> fa_node_result = 
+    regions[4].get_field_accessor(FID_NODE_RESULT).typeify<double>();
 
   LogicalRegion pvt_region = regions[1].get_logical_region();
   LogicalRegion shr_region = regions[2].get_logical_region();
@@ -301,7 +306,7 @@ void CalcNewCurrentsTask::cpu_base_impl(const CircuitPiece &p,
     if (m1 == piece_num)
     {
       //printf("The 1st node value is: %f\n", in_node_value);
-      process_result(ctx, rt, fa_pvt_result, fa_shr_result, pvt_region, shr_region, in_ptr, wire_value, out_node_value);
+      process_result(ctx, rt, fa_node_result, pvt_region, shr_region, in_ptr, wire_value, out_node_value);
       //double in_result = get_node_result(ctx, rt, fa_pvt_result, fa_shr_result, pvt_region, shr_region, in_loc, in_ptr);
       //write_node_value(fa_pvt_result, fa_shr_result, in_loc,
       //                in_ptr, in_result + wire_value * out_node_value);
@@ -309,7 +314,7 @@ void CalcNewCurrentsTask::cpu_base_impl(const CircuitPiece &p,
     if (m2 == piece_num && in_ptr != out_ptr)
     {
       //printf("The 2nd node value is: %f\n", out_node_value);
-      process_result(ctx, rt, fa_pvt_result, fa_shr_result, pvt_region, shr_region, out_ptr, wire_value, in_node_value);
+      process_result(ctx, rt, fa_node_result, pvt_region, shr_region, out_ptr, wire_value, in_node_value);
       //double out_result = get_node_result(fa_pvt_result, fa_shr_result, out_loc, out_ptr);
       //write_node_value(fa_pvt_result, fa_shr_result, out_loc,
       //                out_ptr, out_result + wire_value * in_node_value);
